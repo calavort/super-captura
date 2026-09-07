@@ -1,0 +1,10 @@
+# Cache do Python
+__pycache__/
+*.py[cod]
+
+# Material produzido pelo programa (as pastas são recriadas sozinhas)
+capturas/
+videos/
+
+# Preferências locais do Claude Code
+.claude/settings.local.json
