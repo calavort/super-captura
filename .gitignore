@@ -6,5 +6,12 @@ __pycache__/
 capturas/
 videos/
 
+# Configuracao pessoal e arquivos locais de atualizacao/publicacao
+configuracoes.json
+.atualizacoes/
+dist/
+tests/__pycache__/
+*.log
+
 # Preferências locais do Claude Code
 .claude/settings.local.json

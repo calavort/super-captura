@@ -564,6 +564,48 @@
             white-space: nowrap;
         }
 
+        /* Paletas compactas, compartilhadas pelas duas guias. */
+        .color-trigger { display:flex; align-items:center; gap:5px; width:44px; height:22px; margin-right:4px; padding:3px 5px; background:#fff; border:1px solid #d1d1d1; border-radius:4px; cursor:pointer; }
+        .color-chip { flex:1; height:13px; border-radius:2px; background:var(--drawing-color,#107C41); box-shadow:inset 0 0 0 1px #0002; }
+        .picker-chevron { font:12px 'Segoe UI'; color:#616161; }
+        .format-popover { position:fixed; z-index:2500; width:284px; max-width:calc(100vw - 24px); max-height:calc(100vh - 32px); overflow:auto; padding:16px; background:#fff; color:#242424; border:1px solid #e5e5e5; border-radius:10px; box-shadow:0 8px 28px #0002,0 2px 6px #0001; font:12px 'Segoe UI',sans-serif; }
+        .format-popover[hidden] { display:none; }
+        .picker-heading { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; font-size:14px; font-weight:600; }
+        .picker-close { border:0; background:transparent; color:#616161; border-radius:4px; width:24px; height:24px; cursor:pointer; font-size:18px; }
+        .picker-label { display:block; margin:12px 0 8px; font-size:11px; font-weight:600; color:#616161; }
+        .swatch-grid { display:grid; grid-template-columns:repeat(10,1fr); gap:5px; }
+        .color-swatch { aspect-ratio:1; width:100%; border:1px solid #0002; border-radius:3px; background:var(--swatch); cursor:pointer; padding:0; }
+        .color-swatch:hover { transform:scale(1.12); outline:2px solid #c9e8d8; }
+        .color-swatch[aria-pressed="true"] { outline:2px solid #107c41; outline-offset:2px; }
+        .format-popover button:focus-visible,.color-trigger:focus-visible,.stroke-menu-trigger:focus-visible { outline:2px solid #107c41; outline-offset:2px; }
+        .picker-custom { margin-top:14px; border-top:1px solid #ededed; padding-top:12px; }
+        .picker-custom summary { cursor:pointer; font-weight:600; color:#107c41; }
+        .color-spectrum { position:relative; width:100%; height:110px; margin-top:12px; border-radius:5px; touch-action:none; cursor:crosshair; background:linear-gradient(to top,#000,transparent),linear-gradient(to right,#fff,transparent),hsl(var(--hue,145),100%,50%); }
+        .spectrum-thumb { position:absolute; width:10px; height:10px; border:2px solid white; border-radius:50%; box-shadow:0 0 0 1px #0008; transform:translate(-50%,-50%); pointer-events:none; }
+        .hue-slider { width:100%; margin:12px 0; height:10px; border-radius:6px; appearance:none; background:linear-gradient(to right,red,#ff0,#0f0,#0ff,#00f,#f0f,red); }
+        .hue-slider::-webkit-slider-thumb { appearance:none; width:15px; height:15px; border:2px solid white; border-radius:50%; background:transparent; box-shadow:0 0 0 1px #aaa; cursor:pointer; }
+        .custom-color-row { display:flex; align-items:center; gap:8px; }
+        .custom-color-row input { min-width:0; width:100%; height:30px; padding:4px 8px; border:1px solid #d1d1d1; border-radius:4px; font:12px 'Segoe UI'; }
+        .custom-color-row button { height:30px; border:0; border-radius:4px; padding:0 12px; background:#107c41; color:#fff; cursor:pointer; }
+        .custom-color-row .color-chip { flex:none; width:25px; height:25px; }
+        .picker-error { min-height:16px; margin:4px 0 0; color:#b10e1e; font-size:11px; }
+        .stroke-tool { display:flex; width:42px; }
+        .stroke-tool .tool-btn { width:29px; min-width:0; }
+        .stroke-menu-trigger { width:13px; padding:0; border:1px solid transparent; border-radius:3px; background:transparent; color:#616161; cursor:pointer; }
+        .stroke-menu-trigger:hover,.color-trigger:hover,.picker-close:hover { background:#f0f7f3; border-color:#a3cbb5; }
+        .stroke-choices { display:flex; flex-direction:column; gap:3px; }
+        .stroke-choice { display:flex; align-items:center; gap:14px; min-height:36px; padding:6px 10px; border:1px solid transparent; border-radius:5px; background:#fff; cursor:pointer; color:#424242; }
+        .stroke-choice[aria-pressed="true"] { background:#e8f3ed; border-color:#107c41; color:#107c41; }
+        .stroke-choice:hover { background:#f1f6f3; }
+        .stroke-sample { width:150px; height:var(--stroke-size); max-height:24px; border-radius:20px; background:var(--drawing-color,#107c41); }
+        .stroke-choice[data-marker="true"] .stroke-sample { opacity:.38; }
+        .format-popover { border-radius:10px !important; }
+        .format-popover [hidden] { display:none !important; }
+        .format-popover button,.format-popover input,.color-trigger { border-radius:4px !important; }
+        .format-popover .color-swatch { border-radius:3px !important; }
+        .format-popover .color-spectrum { border-radius:5px !important; }
+        .format-popover .spectrum-thumb { border-radius:50% !important; }
+        .format-popover .stroke-sample { border-radius:20px !important; }
     </style>
 </head>
 <body onload="initializeGreeting()">
@@ -726,7 +768,8 @@
                     </div>
                     <div class="config-row">
                         <label style="width: 60px;">Cor / Esp.</label>
-                        <input type="color" class="config-input short" id="cfg-cor" value="#107C41" style="margin-right: 4px;">
+                        <input type="hidden" id="cfg-cor" value="#107C41">
+                        <button class="color-trigger" type="button" data-color-picker title="Cores" aria-label="Escolher cor" aria-expanded="false"><span class="color-chip"></span><span class="picker-chevron">⌄</span></button>
                         <input type="number" class="config-input short" id="cfg-espessura" value="4" min="1" max="20">
                     </div>
                     <div class="config-row">
@@ -858,7 +901,8 @@
                     </div>
                     <div class="config-row">
                         <label style="width: 60px;">Cor / Esp.</label>
-                        <input type="color" class="config-input short" id="ed-cfg-cor" value="#107C41" style="margin-right: 4px;" onchange="syncMainFormatControlsFromEdition()">
+                        <input type="hidden" id="ed-cfg-cor" value="#107C41">
+                        <button class="color-trigger" type="button" data-color-picker title="Cores" aria-label="Escolher cor" aria-expanded="false"><span class="color-chip"></span><span class="picker-chevron">⌄</span></button>
                         <input type="number" class="config-input short" id="ed-cfg-espessura" value="4" min="1" max="20" onchange="syncMainFormatControlsFromEdition()">
                     </div>
                     <div class="config-row">
@@ -896,6 +940,20 @@
         </div>
 
         <div class="ribbon-content" id="tab-config">
+            <div class="ribbon-group" data-title="Atualiza&#231;&#245;es">
+                <div class="ribbon-col" style="width: 218px; min-width: 218px;">
+                    <div class="config-row" id="update-version">Vers&#227;o</div>
+                    <div class="config-row" style="gap: 6px;">
+                        <button class="btn btn-small" id="btn-check-update" onclick="appBridge('checkUpdates')" title="Verificar atualiza&#231;&#245;es">
+                            <span class="material-symbols-outlined">sync</span>Verificar
+                        </button>
+                        <button class="btn btn-small" id="btn-install-update" onclick="appBridge('installUpdate')" title="Instalar atualiza&#231;&#227;o" disabled>
+                            <span class="material-symbols-outlined">system_update_alt</span>Atualizar
+                        </button>
+                    </div>
+                    <div id="update-status" role="status" style="font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; height: 16px;">Aguardando verifica&#231;&#227;o.</div>
+                </div>
+            </div>
             
             <div class="ribbon-group" data-title="Cadastro de Usuário">
                 <div class="ribbon-col">

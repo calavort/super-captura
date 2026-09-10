@@ -7,7 +7,7 @@ nova interface HTML integrada ao PySide6.
 INSTALAÇÃO
 ----------
 1. Execute "Instalar Bibliotecas.bat" uma vez.
-2. Execute "Abrir Super Captura.bat" para iniciar o programa.
+2. Execute "iniciar_super_captura.bat" para iniciar o programa.
 3. Opcional: execute "Adicionar ao Menu Iniciar.bat" para criar o atalho
    "Super Captura" no Menu Iniciar com o ícone do programa. O mesmo arquivo
    também limpa o cache de ícones do Windows, que é o que faz o Menu Iniciar
@@ -15,6 +15,8 @@ INSTALAÇÃO
 
 RECURSOS
 --------
+- Atualizacoes por GitHub Releases: verificacao ao abrir e instalacao com
+  confirmacao. Consulte ATUALIZACOES.md para instalar e publicar versoes.
 - Captura de uma área ou da tela inteira.
 - Captura otimizada para uso prático: menor espera para esconder a janela,
   exibição imediata sempre que possível e uso de arquivo temporário apenas

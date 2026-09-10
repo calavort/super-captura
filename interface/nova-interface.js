@@ -19,6 +19,10 @@ let isDrawing = false;
 let startPoint = null;
 let preview = null;
 let currentPoints = [];
+const strokeWidths = {Caneta: 4, MarcaTexto: 16};
+let recentColors = [];
+let activeFormatPopover = null;
+let formatPopoverAnchor = null;
 let selectedIndex = -1;
 let interactionMode = null;
 let dragOffset = {x: 0, y: 0};
@@ -82,6 +86,71 @@ function setStatus(message) {
     byId("status-text").textContent = message || "Pronto.";
 }
 
+function updateReleaseState(state) {
+    byId("update-version").textContent = `Versao ${state.version}`;
+    byId("update-status").textContent = state.message;
+    byId("update-status").title = state.message;
+    byId("btn-check-update").disabled = state.busy;
+    byId("btn-install-update").disabled = state.busy || !state.available;
+}
+
+function serializeUpdateSession() {
+    try {
+        finishActiveCommand(true);
+        clearTimeout(preferenceTimer);
+        clearTimeout(clipboardSyncTimer);
+        if (pyBridge) pyBridge.savePreferences(JSON.stringify(readPreferences()));
+        const imageData = image => {
+            if (!image) return null;
+            const buffer = document.createElement("canvas");
+            buffer.width = image.naturalWidth || image.width;
+            buffer.height = image.naturalHeight || image.height;
+            buffer.getContext("2d").drawImage(image, 0, 0);
+            return buffer.toDataURL("image/png");
+        };
+        const state = snapshotState();
+        return JSON.stringify({
+            schema: 1, workspaceMode,
+            homeAnnotations: state.homeAnnotations,
+            editionAnnotations: state.editionAnnotations,
+            editionCanvasSize: state.editionCanvasSize,
+            bgImage: imageData(state.bgImage),
+            editionItems: state.editionItems.map(item => {
+                const {image, source, ...rest} = item;
+                return {...rest, source: imageData(image)};
+            })
+        });
+    } catch (error) {
+        return JSON.stringify({error: `Nao foi possivel preservar a edicao: ${error.message}`});
+    }
+}
+
+async function restoreUpdateSession(state) {
+    try {
+        if (state.schema !== 1) throw new Error("Formato desconhecido.");
+        const load = source => new Promise((resolve, reject) => {
+            if (!source) return resolve(null);
+            const image = new Image();
+            image.onload = () => resolve(image);
+            image.onerror = () => reject(new Error("Imagem indisponivel."));
+            image.src = source;
+        });
+        const restored = {...state, bgImage: await load(state.bgImage)};
+        restored.editionItems = await Promise.all(state.editionItems.map(async item => ({
+            ...item, image: await load(item.source)
+        })));
+        workspaceMode = state.workspaceMode === "edition" ? "edition" : "home";
+        restoreState(restored);
+        const tabId = workspaceMode === "edition" ? "tab-edicao" : "tab-home";
+        const tab = document.querySelector(`.ribbon-tab[onclick*="'${tabId}'"]`);
+        if (tab) switchTab(tabId, tab);
+        fitToWorkspace();
+        if (pyBridge) pyBridge.acknowledgeUpdateSession();
+    } catch (error) {
+        setStatus(`A edicao anterior nao foi recuperada: ${error.message}`);
+    }
+}
+
 function switchTab(tabId, element) {
     document.querySelectorAll(".ribbon-tab").forEach(tab => tab.classList.remove("active"));
     document.querySelectorAll(".ribbon-content").forEach(content => content.classList.remove("active"));
@@ -136,6 +205,10 @@ function applySettings(settings) {
     setInputValue("cfg-video-audio", appSettings.video_audio || "none");
     setInputValue("cfg-cor", appSettings.color || "#107C41");
     setInputValue("cfg-espessura", appSettings.thickness || 4);
+    strokeWidths.Caneta = Math.max(1, Math.min(20, Number(appSettings.pen_thickness) || 4));
+    strokeWidths.MarcaTexto = Math.max(4, Math.min(80, Number(appSettings.highlighter_thickness) || 16));
+    recentColors = Array.isArray(appSettings.recent_colors)
+        ? appSettings.recent_colors.filter(color => /^#[0-9a-f]{6}$/i.test(color)).slice(0, 10) : [];
     setInputValue("cfg-fonte", appSettings.font_size || 28);
     setInputValue("cfg-numero", appSettings.number || 1);
     if (byId("cfg-balao-fill")) byId("cfg-balao-fill").checked = appSettings.balloon_fill !== false;
@@ -164,6 +237,9 @@ function readPreferences() {
         video_audio: byId("cfg-video-audio").value,
         color: byId("cfg-cor").value,
         thickness: Number(byId("cfg-espessura").value) || 4,
+        pen_thickness: strokeWidths.Caneta,
+        highlighter_thickness: strokeWidths.MarcaTexto,
+        recent_colors: recentColors,
         font_size: Number(byId("cfg-fonte").value) || 28,
         number: Number(byId("cfg-numero").value) || 1,
         balloon_fill: byId("cfg-balao-fill") ? byId("cfg-balao-fill").checked : true,
@@ -307,6 +383,7 @@ function updateMaximizeIcon(maximized) {
 }
 
 function selectTool(toolName, announce = true) {
+    closeFormatPopover();
     document.querySelectorAll(".tool-btn").forEach(item => {
         item.classList.toggle("active", item.dataset.tool === toolName);
     });
@@ -315,6 +392,9 @@ function selectTool(toolName, announce = true) {
     selectedIndex = -1;
     selectedEditionItemIndex = -1;
     interactionMode = null;
+    if (strokeResizeTools.has(toolName)) byId("cfg-espessura").value = strokeWidths[toolName];
+    else byId("cfg-espessura").value = Math.min(20, Number(byId("cfg-espessura").value) || 4);
+    syncEditionFormatControlsFromMain();
     canvas.style.cursor = currentTool === "Mover" ? "default" : "crosshair";
     if (bgImage || workspaceMode === "edition") redraw();
     if (announce) setStatus(`${button?.title || currentTool} selecionado.`);
@@ -330,7 +410,7 @@ document.querySelectorAll(".tool-btn").forEach(button => {
 function syncFormatControlsFromSelection(shape) {
     if (!shape) return;
     if (shape.color) byId("cfg-cor").value = shape.color;
-    if (shape.thick) byId("cfg-espessura").value = shape.thick;
+    if (shape.thick) byId("cfg-espessura").value = shape.thick * (shape.type === "MarcaTexto" ? 4 : 1);
     if (shape.font) byId("cfg-fonte").value = shape.font;
     if (shape.type === "Balao") {
         if (byId("cfg-balao-fill")) byId("cfg-balao-fill").checked = shape.fillBalloon !== false;
@@ -360,6 +440,7 @@ function syncEditionFormatControlsFromMain() {
     setOptionalActive("ed-btn-bold", byId("btn-bold")?.classList.contains("active"));
     setOptionalActive("ed-btn-italic", byId("btn-italic")?.classList.contains("active"));
     setOptionalActive("ed-btn-underline", byId("btn-underline")?.classList.contains("active"));
+    refreshDrawingControls();
 }
 
 function syncMainFormatControlsFromEdition() {
@@ -426,6 +507,10 @@ function applyCurrentFormattingToActiveEditor() {
 }
 
 function handleFormatControlChanged() {
+    const tool = formattingTool();
+    const maximum = tool === "MarcaTexto" ? 80 : 20;
+    byId("cfg-espessura").value = Math.max(1, Math.min(maximum, Number(byId("cfg-espessura").value) || 4));
+    if (strokeResizeTools.has(tool)) strokeWidths[tool] = Number(byId("cfg-espessura").value);
     syncEditionFormatControlsFromMain();
     if (applyCurrentFormattingToActiveEditor()) {
         persistPreferences();
@@ -788,10 +873,243 @@ window.addEventListener("paste", event => {
     reader.readAsDataURL(file);
 });
 
+function formattingTool() {
+    return annotations[selectedIndex]?.type || currentTool;
+}
+
+function refreshDrawingControls() {
+    document.documentElement.style.setProperty("--drawing-color", byId("cfg-cor").value);
+    const marker = formattingTool() === "MarcaTexto";
+    for (const id of ["cfg-espessura", "ed-cfg-espessura"]) {
+        byId(id).max = marker ? 80 : 20;
+        byId(id).title = "Espessura em pixels da imagem";
+        byId(id).setAttribute("aria-label", "Espessura em pixels");
+    }
+}
+
+function closeFormatPopover(restoreFocus = false) {
+    if (activeFormatPopover) activeFormatPopover.hidden = true;
+    if (formatPopoverAnchor) {
+        formatPopoverAnchor.setAttribute("aria-expanded", "false");
+        if (restoreFocus) formatPopoverAnchor.focus({preventScroll: true});
+    }
+    activeFormatPopover = null;
+    formatPopoverAnchor = null;
+}
+
+function positionFormatPopover() {
+    if (!activeFormatPopover || !formatPopoverAnchor) return;
+    const anchor = formatPopoverAnchor.getBoundingClientRect();
+    const popup = activeFormatPopover;
+    popup.style.left = `${Math.max(12, Math.min(anchor.left, innerWidth - popup.offsetWidth - 12))}px`;
+    popup.style.top = `${Math.max(12, Math.min(anchor.bottom + 8, innerHeight - popup.offsetHeight - 12))}px`;
+}
+
+function openFormatPopover(popup, anchor) {
+    closeFormatPopover();
+    activeFormatPopover = popup;
+    formatPopoverAnchor = anchor;
+    anchor.setAttribute("aria-expanded", "true");
+    popup.hidden = false;
+    positionFormatPopover();
+    (popup.querySelector('button[aria-pressed="true"]') || popup.querySelector('button:not(.picker-close), input'))?.focus({preventScroll: true});
+}
+
+function setDrawingColor(color) {
+    if (!/^#[0-9a-f]{6}$/i.test(color)) return false;
+    color = color.toUpperCase();
+    byId("cfg-cor").value = color;
+    recentColors = [color, ...recentColors.filter(item => item.toUpperCase() !== color)].slice(0, 10);
+    handleFormatControlChanged();
+    closeFormatPopover(true);
+    return true;
+}
+
+function initializeDrawingPickers() {
+    const colors = document.createElement("section");
+    colors.id = "drawing-color-popover";
+    colors.className = "format-popover";
+    colors.hidden = true;
+    colors.setAttribute("role", "dialog");
+    colors.setAttribute("aria-label", "Cores do desenho");
+    colors.innerHTML = `<div class="picker-heading">Cores<button class="picker-close" aria-label="Fechar">×</button></div>
+        <span class="picker-label">Cores do tema</span><div class="swatch-grid" data-palette="theme"></div>
+        <span class="picker-label">Cores padrão</span><div class="swatch-grid" data-palette="standard"></div>
+        <span class="picker-label" id="recent-color-label">Recentes</span><div class="swatch-grid" data-palette="recent"></div>
+        <details class="picker-custom"><summary>Mais cores</summary>
+            <div class="color-spectrum" id="color-spectrum" role="slider" tabindex="0" aria-label="Saturação e luminosidade: use as setas" aria-valuemin="0" aria-valuemax="100"><span class="spectrum-thumb"></span></div>
+            <input class="hue-slider" id="color-hue" type="range" min="0" max="360" aria-label="Matiz">
+            <div class="custom-color-row"><span class="color-chip" id="custom-color-preview"></span><input id="custom-color-hex" aria-label="Cor hexadecimal" maxlength="7" spellcheck="false" placeholder="#107C41"><button id="apply-custom-color">Aplicar</button></div>
+            <p class="picker-error" id="custom-color-error" role="status"></p>
+        </details>`;
+    document.body.append(colors);
+    const theme = ["#FFFFFF", "#242424", "#E7E6E6", "#44546A", "#107C41", "#4472C4", "#ED7D31", "#A5A5A5", "#FFC000", "#7030A0"];
+    const standard = ["#C00000", "#FF0000", "#FFC000", "#FFFF00", "#92D050", "#00B050", "#00B0F0", "#0070C0", "#002060", "#7030A0"];
+    const tint = (hex, fraction) => "#" + [1, 3, 5].map(offset => {
+        const value = parseInt(hex.slice(offset, offset + 2), 16);
+        return Math.round(value + (255 - value) * fraction).toString(16).padStart(2, "0");
+    }).join("");
+    const fillPalette = (name, values) => {
+        const grid = colors.querySelector(`[data-palette="${name}"]`);
+        grid.replaceChildren();
+        values.forEach(color => {
+            const button = document.createElement("button");
+            button.className = "color-swatch";
+            button.style.setProperty("--swatch", color);
+            button.title = color.toUpperCase();
+            button.setAttribute("aria-label", `Cor ${color.toUpperCase()}`);
+            button.setAttribute("aria-pressed", String(color.toUpperCase() === byId("cfg-cor").value.toUpperCase()));
+            button.onclick = () => setDrawingColor(color);
+            grid.append(button);
+        });
+    };
+    let hue = 145, saturation = 0.85, value = 0.49;
+    const spectrum = byId("color-spectrum");
+    const hexInput = byId("custom-color-hex");
+    const hsvColor = () => {
+        const c = value * saturation, h = (hue % 360) / 60, x = c * (1 - Math.abs(h % 2 - 1));
+        const channels = [[c,x,0],[x,c,0],[0,c,x],[0,x,c],[x,0,c],[c,0,x]][Math.floor(h)];
+        return "#" + channels.map(channel => Math.round((channel + value - c) * 255).toString(16).padStart(2,"0")).join("").toUpperCase();
+    };
+    const updateCustom = () => {
+        hexInput.value = hsvColor();
+        spectrum.style.setProperty("--hue", hue);
+        spectrum.firstElementChild.style.left = `${saturation * 100}%`;
+        spectrum.firstElementChild.style.top = `${(1 - value) * 100}%`;
+        spectrum.setAttribute("aria-valuenow", String(Math.round(saturation * 100)));
+        spectrum.setAttribute("aria-valuetext", `Saturação ${Math.round(saturation * 100)}%, luminosidade ${Math.round(value * 100)}%`);
+        byId("custom-color-preview").style.setProperty("--drawing-color", hexInput.value);
+        byId("color-hue").value = hue;
+        byId("custom-color-error").textContent = "";
+    };
+    const readCustom = hex => {
+        const [r,g,b] = [1,3,5].map(offset => parseInt(hex.slice(offset,offset+2),16) / 255);
+        const high = Math.max(r,g,b), low = Math.min(r,g,b), delta = high - low;
+        hue = delta === 0 ? 0 : ((high === r ? (g-b)/delta : high === g ? (b-r)/delta+2 : (r-g)/delta+4) * 60 + 360) % 360;
+        saturation = high === 0 ? 0 : delta/high;
+        value = high;
+        updateCustom();
+    };
+    const pickSpectrum = event => {
+        const rect = spectrum.getBoundingClientRect();
+        saturation = Math.max(0,Math.min(1,(event.clientX-rect.left)/rect.width));
+        value = 1-Math.max(0,Math.min(1,(event.clientY-rect.top)/rect.height));
+        updateCustom();
+    };
+    spectrum.onpointerdown = event => { if (event.button !== 0) return; spectrum.setPointerCapture(event.pointerId); pickSpectrum(event); };
+    spectrum.onpointermove = event => { if (spectrum.hasPointerCapture(event.pointerId)) pickSpectrum(event); };
+    spectrum.onkeydown = event => {
+        if (!event.key.startsWith("Arrow")) return;
+        event.preventDefault();
+        saturation = Math.max(0, Math.min(1, saturation + (event.key === "ArrowRight" ? .02 : event.key === "ArrowLeft" ? -.02 : 0)));
+        value = Math.max(0, Math.min(1, value + (event.key === "ArrowUp" ? .02 : event.key === "ArrowDown" ? -.02 : 0)));
+        updateCustom();
+    };
+    byId("color-hue").oninput = event => { hue = Number(event.target.value); updateCustom(); };
+    hexInput.oninput = () => { if (/^#[0-9a-f]{6}$/i.test(hexInput.value)) readCustom(hexInput.value); };
+    const applyHex = () => {
+        let color = hexInput.value.trim();
+        if (!color.startsWith("#")) color = "#" + color;
+        if (!setDrawingColor(color)) {
+            byId("custom-color-error").textContent = "Use uma cor como #107C41.";
+            hexInput.focus();
+        }
+    };
+    byId("apply-custom-color").onclick = applyHex;
+    hexInput.onkeydown = event => { if (event.key === "Enter") { event.preventDefault(); applyHex(); } };
+    colors.querySelector("details").addEventListener("toggle", positionFormatPopover);
+    colors.querySelector(".picker-close").onclick = () => closeFormatPopover(true);
+    document.querySelectorAll("[data-color-picker]").forEach(button => {
+        button.onclick = () => {
+            if (activeFormatPopover === colors && formatPopoverAnchor === button) return closeFormatPopover();
+            fillPalette("theme", [...theme, ...theme.map(c => tint(c,.8)), ...theme.map(c => tint(c,.55)), ...theme.map(c => tint(c,.25))]);
+            fillPalette("standard", standard);
+            fillPalette("recent", recentColors);
+            byId("recent-color-label").hidden = recentColors.length === 0;
+            readCustom(byId("cfg-cor").value);
+            openFormatPopover(colors, button);
+        };
+    });
+
+    const thickness = document.createElement("section");
+    thickness.id = "stroke-width-popover";
+    thickness.className = "format-popover";
+    thickness.hidden = true;
+    thickness.setAttribute("role", "dialog");
+    thickness.setAttribute("aria-label", "Espessura do traço");
+    document.body.append(thickness);
+    document.querySelectorAll('.tool-btn[data-tool="Caneta"],.tool-btn[data-tool="MarcaTexto"]').forEach(toolButton => {
+        const wrapper = document.createElement("div");
+        wrapper.className = "stroke-tool";
+        toolButton.before(wrapper);
+        wrapper.append(toolButton);
+        const button = document.createElement("button");
+        const tool = toolButton.dataset.tool;
+        const marker = tool === "MarcaTexto";
+        button.className = "stroke-menu-trigger";
+        button.textContent = "⌄";
+        button.title = `Espessura ${marker ? "do marca-texto" : "da caneta"}`;
+        button.setAttribute("aria-label", button.title);
+        button.setAttribute("aria-expanded", "false");
+        wrapper.append(button);
+        button.onclick = () => {
+            if (activeFormatPopover === thickness && formatPopoverAnchor === button) return closeFormatPopover();
+            const editingSelection = annotations[selectedIndex]?.type === tool;
+            if (!editingSelection) { finishActiveCommand(true); selectTool(tool); }
+            thickness.innerHTML = `<div class="picker-heading">${marker ? "Marca-texto" : "Caneta"}<button class="picker-close" aria-label="Fechar">×</button></div><span class="picker-label">Espessura do traço</span><div class="stroke-choices"></div><span class="picker-label">Outros valores: campo Cor / Esp. na faixa.</span>`;
+            thickness.querySelector(".picker-close").onclick = () => closeFormatPopover(true);
+            (marker ? [8,12,16,24,32,48] : [1,2,3,4,6,8,12]).forEach(width => {
+                const choice = document.createElement("button");
+                choice.className = "stroke-choice";
+                choice.dataset.marker = String(marker);
+                choice.setAttribute("aria-label", `${width} pixels`);
+                choice.setAttribute("aria-pressed", String(Number(byId("cfg-espessura").value) === width));
+                choice.innerHTML = `<span class="stroke-sample" style="--stroke-size:${marker ? width / 2 : width}px"></span><span>${width} px</span>`;
+                choice.onclick = () => { byId("cfg-espessura").value = width; handleFormatControlChanged(); closeFormatPopover(true); };
+                thickness.querySelector(".stroke-choices").append(choice);
+            });
+            openFormatPopover(thickness, button);
+        };
+    });
+    document.addEventListener("mousedown", event => {
+        if (activeFormatPopover && !activeFormatPopover.contains(event.target) && !formatPopoverAnchor.contains(event.target)) closeFormatPopover();
+    });
+    window.addEventListener("resize", () => closeFormatPopover());
+    document.querySelectorAll(".ribbon-content").forEach(element => element.addEventListener("scroll", () => closeFormatPopover()));
+    refreshDrawingControls();
+}
+
+function appendStrokePoint(point, final = false) {
+    const last = currentPoints[currentPoints.length - 1];
+    const distance = last ? Math.hypot(point.x-last.x, point.y-last.y) : Infinity;
+    // Elimina tremores subpixel, sem atrasar a ponta ou perder o ponto final.
+    const threshold = Math.min(2, .75 / Math.max(.1, canvasScale().x));
+    if (distance > 0 && (final || distance >= threshold)) currentPoints.push(point);
+}
+
+function drawSmoothStroke(context, points) {
+    if (!points.length) return;
+    if (points.length === 1) {
+        context.arc(points[0].x, points[0].y, context.lineWidth / 2, 0, Math.PI * 2);
+        context.fill();
+        return;
+    }
+    context.moveTo(points[0].x, points[0].y);
+    // Curvas por pontos médios: tangentes contínuas e sem ultrapassar o traço.
+    // A mesma geometria é usada no preview, na imagem copiada e na exportação.
+    for (let i = 1; i < points.length - 1; i++) {
+        const p = points[i], next = points[i+1];
+        context.quadraticCurveTo(p.x, p.y, (p.x+next.x)/2, (p.y+next.y)/2);
+    }
+    const last = points[points.length-1];
+    context.lineTo(last.x, last.y);
+    context.stroke();
+}
+
 function getOptions() {
     return {
         color: byId("cfg-cor").value || "#107C41",
-        thick: Math.max(1, Number(byId("cfg-espessura").value) || 4),
+        thick: Math.max(1, Number(byId("cfg-espessura").value) || 4) / (formattingTool() === "MarcaTexto" ? 4 : 1),
         font: Math.max(8, Number(byId("cfg-fonte").value) || 28),
         bold: byId("btn-bold").classList.contains("active"),
         italic: byId("btn-italic").classList.contains("active"),
@@ -1070,7 +1388,7 @@ document.addEventListener("mousedown", event => {
     // Controles de formatação NÃO concluem a edição: aplicam-se ao texto aberto
     // (comportamento PowerPoint: selecionar texto e clicar em Negrito etc.).
     const formatControl = event.target.closest(
-        '.ribbon-group[data-title="Formatação"], #advanced-format-dialog, .dialog-launcher');
+        '.ribbon-group[data-title="Formatação"], #advanced-format-dialog, .dialog-launcher, .format-popover');
     if (formatControl) {
         // Botões de estilo não roubam o foco, mantendo a seleção visível.
         if (event.target.closest(".style-btn")) event.preventDefault();
@@ -1194,7 +1512,7 @@ canvas.addEventListener("mousedown", event => {
     preview = createShape(currentTool, point, point, options);
 });
 
-canvas.addEventListener("mousemove", event => {
+canvas.addEventListener("pointermove", event => {
     if (workspaceMode !== "edition" && !bgImage) return;
     let point = getMousePos(event);
     if (orthogonalPath) {
@@ -1263,7 +1581,11 @@ canvas.addEventListener("mousemove", event => {
 
     if (!startPoint) return;
     point = applyDimensionMagnet(currentTool, startPoint, point);
-    if (currentTool === "Caneta" || currentTool === "MarcaTexto") currentPoints.push(point);
+    if (strokeResizeTools.has(currentTool)) {
+        const samples = event.getCoalescedEvents?.() || [];
+        for (const sample of samples) appendStrokePoint(getMousePos(sample));
+        appendStrokePoint(point);
+    }
     preview = createShape(currentTool, startPoint, point, getOptions());
     preview.points = currentPoints.slice();
     if (currentTool === "Balao") preview.text = String(byId("cfg-numero").value || "1");
@@ -1288,7 +1610,7 @@ function finishDrawing(event) {
     }
     if (event && startPoint) {
         const point = applyDimensionMagnet(currentTool, startPoint, getMousePos(event));
-        if (currentTool === "Caneta" || currentTool === "MarcaTexto") currentPoints.push(point);
+        if (strokeResizeTools.has(currentTool)) appendStrokePoint(point, true);
         preview = createShape(currentTool, startPoint, point, getOptions());
         preview.points = currentPoints.slice();
     }
@@ -1377,7 +1699,7 @@ function createShape(type, start, end, options) {
 }
 
 function shapeHasSize(shape) {
-    if (shape.type === "Caneta" || shape.type === "MarcaTexto") return shape.points.length > 1;
+    if (strokeResizeTools.has(shape.type)) return shape.points.length > 0;
     if (shape.type === "LinhaOrto" && Array.isArray(shape.points)) return shape.points.length > 1;
     return Math.abs(shape.w) > 2 || Math.abs(shape.h) > 2;
 }
@@ -1494,9 +1816,7 @@ function drawShape(context, shape, selected = false, temporary = false) {
                 context.globalAlpha = temporary ? 0.3 : 0.38;
                 context.lineWidth = shape.thick * 4;
             }
-            context.moveTo(shape.points[0].x, shape.points[0].y);
-            shape.points.slice(1).forEach(point => context.lineTo(point.x, point.y));
-            context.stroke();
+            drawSmoothStroke(context, shape.points);
         }
     } else if (shape.type === "Cobrir") {
         drawCoveredArea(context, shape);
@@ -2864,6 +3184,11 @@ window.addEventListener("wheel", event => {
 
 window.addEventListener("keydown", event => {
     if (event.key === "Escape") {
+        if (activeFormatPopover) {
+            event.preventDefault();
+            closeFormatPopover(true);
+            return;
+        }
         event.preventDefault();
         if (pyBridge && typeof pyBridge.cancelCapture === "function") pyBridge.cancelCapture();
         interruptCommand();
@@ -2911,5 +3236,6 @@ window.addEventListener("keydown", event => {
     }
 });
 
+initializeDrawingPickers();
 initializeGreeting();
 initializeBridge();

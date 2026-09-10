@@ -15,6 +15,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
+from atualizador import InstanceLock, read_version, recover_transaction
+
 os.environ.setdefault(
     "QTWEBENGINE_CHROMIUM_FLAGS",
     "--disable-gpu --disable-gpu-compositing --disable-features=CalculateNativeWinOcclusion",
@@ -33,7 +35,9 @@ from PySide6.QtMultimedia import (
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QRubberBand, QWidget
+from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QRubberBand, QWidget
+
+from atualizador_ui import UpdateController
 
 
 APP_NAME = "Super Captura"
@@ -424,6 +428,19 @@ class Bridge(QObject):
     @Slot()
     def requestSettings(self):
         self._emit_settings()
+        self.window.updater.ui_ready()
+
+    @Slot()
+    def checkUpdates(self):
+        self.window.updater.check()
+
+    @Slot()
+    def installUpdate(self):
+        self.window.updater.offer_install()
+
+    @Slot()
+    def acknowledgeUpdateSession(self):
+        self.window.updater.acknowledge_session()
 
     @Slot()
     def cancelCapture(self):
@@ -468,6 +485,8 @@ class Bridge(QObject):
         self._schedule_capture("screen", delay, auto_copy, auto_save)
 
     def _schedule_capture(self, kind: str, delay: int, auto_copy: bool, auto_save: bool) -> None:
+        if self.window.updater.installing:
+            return
         self._capture_timer.stop()
         self._capture_remaining = max(0, min(int(delay), 60))
         self._pending_capture = (kind, bool(auto_copy), bool(auto_save))
@@ -705,6 +724,7 @@ class Bridge(QObject):
             "delay", "auto_copy", "auto_save", "video_format", "video_fps", "video_audio",
             "color", "thickness", "font_size", "number", "balloon_fill", "balloon_line",
             "bold", "italic", "underline",
+            "pen_thickness", "highlighter_thickness", "recent_colors",
         }
         if isinstance(incoming, dict):
             for key in allowed:
@@ -775,6 +795,8 @@ class Bridge(QObject):
 
     @Slot(str, int, str)
     def startVideoRecording(self, file_format: str = "mp4", fps: int = 30, audio_mode: str = "none"):
+        if self.window.updater.installing:
+            return
         if self.video_recording:
             self.stopVideoRecording()
             return
@@ -950,7 +972,7 @@ class MainWindow(QMainWindow):
             if folder != _resolve_app_path(self.settings.get(key), fallback):
                 self.settings[key] = str(folder)
 
-        self.setWindowTitle(f"{APP_NAME} - {APP_REV}")
+        self.setWindowTitle(f"{APP_NAME} - {APP_REV} - v{read_version(BASE_DIR)['version']}")
         if ICON_PATH.exists():
             self.setWindowIcon(QIcon(str(ICON_PATH)))
         # No Windows a janela permanece nativa (Aero Snap / Snap Layouts / maximizar
@@ -982,6 +1004,7 @@ class MainWindow(QMainWindow):
             pass
 
         self.bridge = Bridge(self, self.settings)
+        self.updater = UpdateController(self, BASE_DIR)
         self.channel = QWebChannel(self.web.page())
         self.channel.registerObject("bridge", self.bridge)
         self.web.page().setWebChannel(self.channel)
@@ -1176,11 +1199,25 @@ def main() -> None:
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("Edflávio Calavort")
     app.setDesktopFileName(APP_NAME)
+    lock = InstanceLock(BASE_DIR)
+    if not lock.acquire():
+        QMessageBox.information(None, APP_NAME, "O Super Captura ja esta aberto ou sendo atualizado nesta pasta.")
+        return
+    try:
+        recover_transaction(BASE_DIR)
+    except Exception as exc:
+        QMessageBox.critical(None, APP_NAME, f"Nao foi possivel recuperar a atualizacao: {exc}")
+        lock.release()
+        return
     if ICON_PATH.exists():
         app.setWindowIcon(QIcon(str(ICON_PATH)))
     window = MainWindow()
     window.show()
-    sys.exit(app.exec())
+    try:
+        result = app.exec()
+    finally:
+        lock.release()
+    sys.exit(result)
 
 
 if __name__ == "__main__":
