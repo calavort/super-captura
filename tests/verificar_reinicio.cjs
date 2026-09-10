@@ -5,7 +5,9 @@ const [endpoint, folder, screenshot] = process.argv.slice(2);
     let browser;
     for (let attempt = 0; attempt < 50; attempt++) {
         try {
-            browser = await chromium.connectOverCDP(endpoint);
+            // Qt supports attaching to its page, but not browser-context defaults
+            // such as Browser.setDownloadBehavior in recent Playwright versions.
+            browser = await chromium.connectOverCDP(endpoint, {noDefaults: true});
             break;
         } catch {
             await new Promise(resolve => setTimeout(resolve, 200));

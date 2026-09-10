@@ -26,8 +26,8 @@ def main():
     parser.add_argument("--node", required=True)
     parser.add_argument("--node-modules", required=True)
     args = parser.parse_args()
-    temporary = tempfile.TemporaryDirectory(prefix="super-captura-online-")
-    folder = Path(temporary.name)
+    # Keep the diagnostic copy intact on failure, including files of a live app.
+    folder = Path(tempfile.mkdtemp(prefix="super-captura-online-"))
     print("Copia de teste:", folder, flush=True)
     for name in APP_FILES:
         destination = folder / name
@@ -107,7 +107,9 @@ def main():
     # Wait until Qt releases its profile files after closeWindow().
     for attempt in range(30):
         try:
-            temporary.cleanup()
+            assert folder.resolve().is_relative_to(Path(tempfile.gettempdir()).resolve())
+            assert folder.name.startswith("super-captura-online-")
+            shutil.rmtree(folder)
             break
         except PermissionError:
             time.sleep(0.1)
