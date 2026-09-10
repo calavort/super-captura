@@ -74,6 +74,18 @@ def main():
         js("document.querySelector('[data-color-picker]').click()")
         check("!byId('drawing-color-popover').hidden && document.querySelectorAll('input[type=color]').length === 0")
         check("byId('drawing-color-popover').getBoundingClientRect().right <= innerWidth")
+        check("""(() => {
+            const cells = [...document.querySelectorAll('[data-palette=theme] button')];
+            const luminance = hex => [1,3,5].reduce((sum, offset, index) => {
+                const channel = parseInt(hex.slice(offset,offset+2),16)/255;
+                return sum + [.2126,.7152,.0722][index] * (channel <= .04045 ? channel/12.92 : ((channel+.055)/1.055)**2.4);
+            },0);
+            return cells.length === 40 && Array.from({length:10},(_,column) => {
+                const shades = cells.filter((_,i) => i%10 === column).map(cell => cell.title);
+                return new Set(shades).size === shades.length && shades.every((shade,row) =>
+                    row === 0 || luminance(shades[row-1]) > luminance(shade));
+            }).every(Boolean) && cells[0].title === '#FFFFFF' && cells[10].title !== '#FFFFFF';
+        })()""")
         screenshot("validacao-cores-office.png")
         js("document.querySelector('[data-palette=standard] button:nth-child(2)').click()")
         check("getOptions().color === '#FF0000' && byId('ed-cfg-cor').value === '#FF0000'")

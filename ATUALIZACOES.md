@@ -1,5 +1,10 @@
 # Atualizacoes do Super Captura
 
+## Versao 7.1.2
+
+- Colunas da paleta ordenadas da cor mais clara para a mais escura.
+- Primeira coluna com branco e tons de cinza distintos, sem brancos repetidos.
+
 ## Versao 7.1.1
 
 - Caneta e marca-texto com curvas suaves, pontas arredondadas e coleta dos

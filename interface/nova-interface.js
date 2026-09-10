@@ -947,8 +947,13 @@ function initializeDrawingPickers() {
     const standard = ["#C00000", "#FF0000", "#FFC000", "#FFFF00", "#92D050", "#00B050", "#00B0F0", "#0070C0", "#002060", "#7030A0"];
     const tint = (hex, fraction) => "#" + [1, 3, 5].map(offset => {
         const value = parseInt(hex.slice(offset, offset + 2), 16);
-        return Math.round(value + (255 - value) * fraction).toString(16).padStart(2, "0");
+        const target = fraction < 0 ? 0 : 255;
+        return Math.round(value + (target - value) * Math.abs(fraction)).toString(16).padStart(2, "0");
     }).join("");
+    // Cada coluna desce do claro ao escuro. Branco recebe sombras de cinza,
+    // pois misturar branco com branco produziria quatro células idênticas.
+    const themePalette = [.8, .45, 0, -.3].flatMap((fraction, row) =>
+        theme.map(color => tint(color, color === "#FFFFFF" ? [0, -.15, -.35, -.6][row] : fraction)));
     const fillPalette = (name, values) => {
         const grid = colors.querySelector(`[data-palette="${name}"]`);
         grid.replaceChildren();
@@ -1022,7 +1027,7 @@ function initializeDrawingPickers() {
     document.querySelectorAll("[data-color-picker]").forEach(button => {
         button.onclick = () => {
             if (activeFormatPopover === colors && formatPopoverAnchor === button) return closeFormatPopover();
-            fillPalette("theme", [...theme, ...theme.map(c => tint(c,.8)), ...theme.map(c => tint(c,.55)), ...theme.map(c => tint(c,.25))]);
+            fillPalette("theme", themePalette);
             fillPalette("standard", standard);
             fillPalette("recent", recentColors);
             byId("recent-color-label").hidden = recentColors.length === 0;
