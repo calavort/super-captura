@@ -235,13 +235,11 @@
         }
 
         /* Grid de Ferramentas */
-        .ribbon-grid-2,
         .ribbon-grid-5,
         .ribbon-grid-3 {
             display: grid;
             gap: 2px;
         }
-        .ribbon-grid-2 { grid-template-columns: repeat(6, 1fr); }
         .ribbon-grid-5 { grid-template-columns: repeat(6, 1fr); }
         .ribbon-grid-3 { grid-template-columns: repeat(3, 1fr); }
 
@@ -319,14 +317,22 @@
         }
 
         /* Botões de Estilo de Texto */
-        .style-btn {
+        .style-btn,
+        .align-btn {
             border: 1px solid #C8C6C4;
             background: #FFFFFF;
             width: 24px;
             height: 22px;
         }
-        .style-btn:hover { background: #F3F2F1; }
-        .style-btn.active { background: #C6E0B4; border-color: #107C41; }
+        .style-btn:hover,
+        .align-btn:hover:not(:disabled) { background: #F3F2F1; }
+        .style-btn.active,
+        .align-btn.active { background: #C6E0B4; border-color: #107C41; }
+        /* Só a caixa de texto e a chamada quebram o texto em linhas; nas outras
+           ferramentas o alinhamento não tem o que fazer e os botões apagam. */
+        .align-btn:disabled,
+        .align-btn.active:disabled { background: #F3F2F1; border-color: #D2D0CE; cursor: default; }
+        .align-btn:disabled .material-symbols-outlined { color: #8A8886; }
 
         /* Lançador de opções estilo Office */
         .dialog-launcher {
@@ -370,15 +376,6 @@
         .advanced-dialog.active { display: flex; }
         /* Porta-interruptores: o <div> existe so para a logica ler deles. */
         .advanced-dialog[hidden] { display: none !important; }
-        .advanced-dialog .dialog-hint {
-            margin-top: 4px;
-            padding-top: 6px;
-            border-top: 1px solid #EDEBE9;
-            font-size: 11px;
-            line-height: 15px;
-            color: #605E5C;
-            max-width: 250px;
-        }
         .advanced-dialog .checkbox-label {
             font-size: 12px;
             line-height: 16px;
@@ -614,8 +611,6 @@
         .stroke-choice[aria-pressed="true"] { background:#C6E0B4; border-color:#107C41; color:#323130; }
         .stroke-choice:hover { background:#F3F2F1; border-color:#C8C6C4; }
         .stroke-sample { width:150px; height:var(--stroke-size); max-height:24px; border-radius:20px; background:var(--drawing-color,#107c41); }
-        /* Amostra do festonado: a borda ondulada nasce do proprio raio escolhido. */
-        .cloud-sample { width:150px; height:30px; background:radial-gradient(circle at 50% 100%, transparent 0, transparent calc(var(--cloud-radius) - 2px), var(--drawing-color,#107c41) calc(var(--cloud-radius) - 2px), var(--drawing-color,#107c41) var(--cloud-radius), transparent var(--cloud-radius)) 0 0/calc(var(--cloud-radius) * 2) 100% repeat-x; }
         .option-choices { display:flex; gap:6px; }
         .option-choice { display:flex; flex:1; flex-direction:column; align-items:center; gap:5px; padding:8px 6px; border:1px solid #C8C6C4; background:#FFFFFF; cursor:pointer; color:#323130; font:12px 'Segoe UI'; }
         .option-choice .material-symbols-outlined { font-size:22px; color:#107c41; }
@@ -807,6 +802,20 @@
                         <button class="color-trigger" type="button" data-color-picker title="Cores" aria-label="Escolher cor" aria-expanded="false"><span class="color-chip"></span><span class="picker-chevron"><svg class="caret-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg></span></button>
                         <input type="number" class="config-input short" id="cfg-espessura" value="4" min="1" max="20">
                     </div>
+                    <div class="config-row">
+                        <label style="width: 60px;">Alinhar</label>
+                        <div style="display: flex; gap: 4px; height: 22px;">
+                            <button class="btn btn-icon-only align-btn active" id="btn-align-left" onclick="setTextAlign('left')" title="Alinhar à esquerda" aria-pressed="true">
+                                <span class="material-symbols-outlined" style="font-size: 18px;">format_align_left</span>
+                            </button>
+                            <button class="btn btn-icon-only align-btn" id="btn-align-center" onclick="setTextAlign('center')" title="Centralizar" aria-pressed="false">
+                                <span class="material-symbols-outlined" style="font-size: 18px;">format_align_center</span>
+                            </button>
+                            <button class="btn btn-icon-only align-btn" id="btn-align-right" onclick="setTextAlign('right')" title="Alinhar à direita" aria-pressed="false">
+                                <span class="material-symbols-outlined" style="font-size: 18px;">format_align_right</span>
+                            </button>
+                        </div>
+                    </div>
                     <!-- Tamanho e número vivem no menu de cada ferramenta (a setinha ao
                          lado do botão). Os campos ficam aqui, ocultos, porque é por eles que
                          passam getOptions, a gravação das preferências e a sincronia entre as
@@ -937,6 +946,14 @@
                         <input type="hidden" id="ed-cfg-cor" value="#107C41">
                         <button class="color-trigger" type="button" data-color-picker title="Cores" aria-label="Escolher cor" aria-expanded="false"><span class="color-chip"></span><span class="picker-chevron"><svg class="caret-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg></span></button>
                         <input type="number" class="config-input short" id="ed-cfg-espessura" value="4" min="1" max="20" onchange="syncMainFormatControlsFromEdition()">
+                    </div>
+                    <div class="config-row">
+                        <label style="width: 60px;">Alinhar</label>
+                        <div style="display: flex; gap: 4px; height: 22px;">
+                            <button class="btn btn-icon-only align-btn active" id="ed-btn-align-left" onclick="setTextAlign('left')" title="Alinhar à esquerda" aria-pressed="true"><span class="material-symbols-outlined" style="font-size: 18px;">format_align_left</span></button>
+                            <button class="btn btn-icon-only align-btn" id="ed-btn-align-center" onclick="setTextAlign('center')" title="Centralizar" aria-pressed="false"><span class="material-symbols-outlined" style="font-size: 18px;">format_align_center</span></button>
+                            <button class="btn btn-icon-only align-btn" id="ed-btn-align-right" onclick="setTextAlign('right')" title="Alinhar à direita" aria-pressed="false"><span class="material-symbols-outlined" style="font-size: 18px;">format_align_right</span></button>
+                        </div>
                     </div>
                     <input type="hidden" id="ed-cfg-fonte" value="28">
                     <input type="hidden" id="ed-cfg-numero" value="1">

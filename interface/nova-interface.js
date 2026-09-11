@@ -41,6 +41,11 @@ let zoomLevel = 1;
 let activeTextEditor = null;
 let orthogonalPath = null;
 const labelTools = new Set(["CotaLivre", "CotaAngulo", "Chamada"]);
+// Alinhar só faz sentido onde o texto vira várias linhas: a caixa de Texto e a
+// chamada. No balão, no triângulo e nas cotas o texto é um valor só, já centrado
+// no lugar dele — por isso os botões apagam nessas ferramentas.
+const TEXT_ALIGNS = ["left", "center", "right"];
+const alignAwareTools = new Set(["Texto", "Chamada"]);
 const boxResizeTools = new Set(["Retangulo", "Circulo", "Cobrir", "Nuvem", "Texto"]);
 const strokeResizeTools = new Set(["Caneta", "MarcaTexto"]);
 // A cota livre e a cota de angulo tambem ganham alcas nas pontas: depois de
@@ -263,6 +268,7 @@ function applySettings(settings) {
     byId("btn-bold").classList.toggle("active", Boolean(appSettings.bold));
     byId("btn-italic").classList.toggle("active", Boolean(appSettings.italic));
     byId("btn-underline").classList.toggle("active", Boolean(appSettings.underline));
+    setTextAlign(TEXT_ALIGNS.includes(appSettings.text_align) ? appSettings.text_align : "left", false);
 
     const shortcuts = appSettings.shortcuts || {};
     setInputValue("hk-area", shortcuts.area || "Alt+P");
@@ -298,7 +304,8 @@ function readPreferences() {
         text_autogrow: byId("cfg-texto-auto") ? byId("cfg-texto-auto").checked : true,
         bold: byId("btn-bold").classList.contains("active"),
         italic: byId("btn-italic").classList.contains("active"),
-        underline: byId("btn-underline").classList.contains("active")
+        underline: byId("btn-underline").classList.contains("active"),
+        text_align: currentTextAlign()
     };
 }
 
@@ -455,6 +462,9 @@ function syncFormatControlsFromSelection(shape) {
     byId("btn-bold").classList.toggle("active", Boolean(shape.bold));
     byId("btn-italic").classList.toggle("active", Boolean(shape.italic));
     byId("btn-underline").classList.toggle("active", Boolean(shape.underline));
+    // Só as marcações que usam alinhamento mandam nos botões: selecionar um
+    // círculo não pode zerar a escolha feita para o próximo texto.
+    if (alignAwareTools.has(shape.type)) setTextAlign(shape.align || "left", false);
     syncEditionFormatControlsFromMain();
 }
 
@@ -466,6 +476,26 @@ function setOptionalValue(id, value) {
 function setOptionalActive(id, value) {
     const button = byId(id);
     if (button) button.classList.toggle("active", Boolean(value));
+}
+
+// Os três botões de alinhamento se excluem, e as duas guias mostram o mesmo
+// estado — por isso um clique em qualquer um deles passa por aqui e acerta os
+// seis de uma vez, em vez de cada guia cuidar dos seus.
+function alignButtons(align) {
+    return [byId(`btn-align-${align}`), byId(`ed-btn-align-${align}`)].filter(Boolean);
+}
+
+function currentTextAlign() {
+    return TEXT_ALIGNS.find(align => byId(`btn-align-${align}`)?.classList.contains("active")) || "left";
+}
+
+function setTextAlign(align, notify = true) {
+    if (!TEXT_ALIGNS.includes(align)) return;
+    TEXT_ALIGNS.forEach(name => alignButtons(name).forEach(button => {
+        button.classList.toggle("active", name === align);
+        button.setAttribute("aria-pressed", String(name === align));
+    }));
+    if (notify) handleFormatControlChanged();
 }
 
 function syncEditionFormatControlsFromMain() {
@@ -515,6 +545,7 @@ function applyCurrentFormattingToSelection() {
         shape.bold = options.bold;
         shape.italic = options.italic;
         shape.underline = options.underline;
+        if (alignAwareTools.has(shape.type)) shape.align = options.align;
         if (shape.type === "Balao") {
             shape.fillBalloon = options.fillBalloon;
             shape.lineBalloon = options.lineBalloon;
@@ -538,6 +569,10 @@ function applyCurrentFormattingToActiveEditor() {
         fillBalloon: options.fillBalloon, lineBalloon: options.lineBalloon,
         fillReview: options.fillReview
     });
+    if (editorAlignsText(activeTextEditor.kind, target)) {
+        target.align = options.align;
+        editor.style.textAlign = options.align;
+    }
     const scale = canvasScale();
     const editorFont = target.type === "Balao"
         ? balloonFontSize(target)
@@ -988,6 +1023,13 @@ function refreshDrawingControls() {
         byId(id).title = "Espessura em pixels da imagem";
         byId(id).setAttribute("aria-label", "Espessura em pixels");
     }
+    // Os botoes de alinhamento so apagam onde o texto existe mas nao tem como
+    // ser alinhado - cota, balao e triangulo guardam um valor so, ja centrado no
+    // lugar dele. Nas demais ferramentas a escolha segue disponivel: vale para a
+    // proxima caixa de texto ou chamada, como negrito e italico ja valem.
+    const tool = formattingTool();
+    const alignBlocked = isTextEditable({type: tool}) && !alignAwareTools.has(tool);
+    TEXT_ALIGNS.forEach(align => alignButtons(align).forEach(button => { button.disabled = alignBlocked; }));
     updateSizeFieldLabel();
 }
 
@@ -1513,6 +1555,7 @@ function getOptions() {
         bold: byId("btn-bold").classList.contains("active"),
         italic: byId("btn-italic").classList.contains("active"),
         underline: byId("btn-underline").classList.contains("active"),
+        align: currentTextAlign(),
         fillBalloon: byId("cfg-balao-fill") ? byId("cfg-balao-fill").checked : true,
         lineBalloon: byId("cfg-balao-line") ? byId("cfg-balao-line").checked : false,
         fillReview: byId("cfg-revisao-fill") ? byId("cfg-revisao-fill").checked : false,
@@ -1626,6 +1669,12 @@ function editorPointForAnnotation(shape) {
     return labelPointForShape(shape);
 }
 
+// O editor flutuante nasce antes da marcação existir: no texto novo "options" é
+// o retorno de getOptions(), sem "type". Daí o tipo do editor entrar na conta.
+function editorAlignsText(kind, options) {
+    return kind === "text" || kind === "editText" || alignAwareTools.has(options?.type);
+}
+
 function createFloatingTextEditor({kind, point, options, shape = null, editIndex = null, initialText = "", placeholder, status}) {
     const scale = canvasScale();
     const editor = document.createElement("textarea");
@@ -1652,6 +1701,8 @@ function createFloatingTextEditor({kind, point, options, shape = null, editIndex
     editor.style.fontWeight = options.bold ? "700" : "400";
     editor.style.fontStyle = options.italic ? "italic" : "normal";
     editor.style.textDecoration = options.underline ? "underline" : "none";
+    // O texto digitado fica onde vai ser desenhado: o textarea alinha igual.
+    if (editorAlignsText(kind, options)) editor.style.textAlign = options.align || "left";
     editor.value = initialText;
     canvasContainer.appendChild(editor);
     activeTextEditor = {kind, editor, x: point.x, y: point.y, options, shape, editIndex};
@@ -1923,6 +1974,8 @@ canvas.addEventListener("mousedown", event => {
         } else {
             selectedEditionItemIndex = -1;
         }
+        // Sem marcacao selecionada quem manda na faixa volta a ser a ferramenta.
+        if (selectedIndex < 0) refreshDrawingControls();
         redraw();
         return;
     }
@@ -2611,7 +2664,7 @@ function drawCallout(context, shape) {
     const layout = calloutTextLayout(context, shape);
     const rect = calloutTextRect(shape, layout);
     context.save();
-    context.textAlign = dir > 0 ? "left" : "right";
+    context.textAlign = "left";
     context.textBaseline = "top";
     context.fillStyle = shape.color;
     context.beginPath();
@@ -2619,16 +2672,22 @@ function drawCallout(context, shape) {
     // ainda passar da altura depois de reduzido até o limite.
     context.rect(rect.x, rect.y, rect.w, Math.max(rect.h, layout.height));
     context.clip();
-    const baseX = dir > 0 ? rect.x : rect.x + rect.w;
+    // A caixa da chamada e larga de proposito (o texto reflui dentro dela), entao
+    // alinhar dentro dela soltaria o texto longe do pe da seta. O alinhamento vale
+    // dentro do bloco de texto, que continua encostado no pe.
+    const align = shape.align || "left";
+    const widths = layout.lines.map(line => context.measureText(line).width);
+    const block = widths.length ? Math.max(...widths) : 0;
+    const blockLeft = dir > 0 ? rect.x : rect.x + rect.w - block;
     layout.lines.forEach((line, index) => {
         const y = rect.y + 4 + index * layout.lineHeight;
-        context.fillText(line, baseX, y);
+        const x = alignedLineX(align, blockLeft, block, widths[index]);
+        context.fillText(line, x, y);
         if (shape.underline) {
-            const width = context.measureText(line).width;
             context.beginPath();
             context.lineWidth = Math.max(1, layout.size / 14);
-            context.moveTo(dir > 0 ? baseX : baseX - width, y + layout.size * 1.05);
-            context.lineTo(dir > 0 ? baseX + width : baseX, y + layout.size * 1.05);
+            context.moveTo(x, y + layout.size * 1.05);
+            context.lineTo(x + widths[index], y + layout.size * 1.05);
             context.stroke();
         }
     });
@@ -2985,9 +3044,22 @@ function textBoxLayout(context, shape) {
     return {size, lines, lineHeight: size * 1.22, height: lines.length * size * 1.22 + 8};
 }
 
+// Onde uma linha comeca dentro do espaco que ela tem. Desenhar sempre a partir
+// da esquerda, com o x ja calculado, deixa o sublinhado sair de graca: ele vai
+// do mesmo x ate x + largura da linha, seja qual for o alinhamento.
+function alignedLineX(align, left, width, lineWidth) {
+    if (align === "center") return left + (width - lineWidth) / 2;
+    if (align === "right") return left + width - lineWidth;
+    return left;
+}
+
 function drawTextBox(context, shape) {
     const layout = textBoxLayout(context, shape);
     if (shape.textHidden) return;
+    const align = shape.align || "left";
+    const left = shape.x + 4;
+    // Mesma largura util em que textBoxLayout quebrou as linhas.
+    const usable = Math.max(20, Math.abs(shape.w || 0) - 8);
     context.textAlign = "left";
     context.textBaseline = "top";
     shape.h = shape.autoHeight === false
@@ -3001,12 +3073,14 @@ function drawTextBox(context, shape) {
     context.clip();
     layout.lines.forEach((line, index) => {
         const y = shape.y + 4 + index * layout.lineHeight;
-        context.fillText(line, shape.x + 4, y);
+        const lineWidth = context.measureText(line).width;
+        const x = alignedLineX(align, left, usable, lineWidth);
+        context.fillText(line, x, y);
         if (shape.underline) {
             context.beginPath();
             context.lineWidth = Math.max(1, layout.size / 14);
-            context.moveTo(shape.x + 4, y + layout.size * 1.05);
-            context.lineTo(shape.x + 4 + context.measureText(line).width, y + layout.size * 1.05);
+            context.moveTo(x, y + layout.size * 1.05);
+            context.lineTo(x + lineWidth, y + layout.size * 1.05);
             context.stroke();
         }
     });

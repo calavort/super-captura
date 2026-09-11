@@ -291,6 +291,109 @@ def main():
         })()""")
         print("OK: caixa de texto cresce com o texto e reduz o texto quando a caixa e fixada")
 
+        # --- alinhamento do texto: esquerda, centralizado e direita ---
+        js("""
+            window.medirTinta = (shape, rect) => {
+                const c = surface();
+                drawShape(c, shape);
+                const dados = c.getImageData(0, 0, 400, 400).data;
+                let soma = 0, peso = 0, min = 1e9, max = -1;
+                const x0 = Math.max(0, Math.floor(rect.x)), x1 = Math.min(400, Math.ceil(rect.x + rect.w));
+                const y0 = Math.max(0, Math.floor(rect.y)), y1 = Math.min(400, Math.ceil(rect.y + rect.h));
+                for (let y = y0; y < y1; y++) for (let x = x0; x < x1; x++) {
+                    const alfa = dados[(y * 400 + x) * 4 + 3];
+                    if (alfa > 40) { soma += x * alfa; peso += alfa; min = Math.min(min, x); max = Math.max(max, x); }
+                }
+                return {centro: peso ? soma / peso : 0, min, max, peso};
+            };
+        """)
+        # Na caixa de Texto o alinhamento e literal: as linhas andam dentro dela.
+        check("""(() => {
+            const base = {type: 'Texto', x: 10, y: 10, w: 300, h: 0, font: 22, color: '#000',
+                          text: ['Uma linha bem mais comprida que a outra', 'ok'].join(String.fromCharCode(10))};
+            const caixa = {x: 10, y: 10, w: 300, h: 200};
+            const medidas = ['left', 'center', 'right'].map(align => medirTinta({...base, align}, caixa));
+            if (medidas.some(m => m.peso === 0)) return false;
+            const [esq, meio, dir] = medidas;
+            // O bloco inteiro anda: a esquerda de cada alinhamento e a propria ordem.
+            return esq.centro < meio.centro && meio.centro < dir.centro
+                && esq.min < meio.min && meio.min < dir.min
+                && esq.max < dir.max;
+        })()""")
+        # Na chamada o alinhamento vale dentro do bloco: a linha mais larga fica
+        # encostada no pe da seta nos tres casos, e so as curtas se mexem.
+        check("""(() => {
+            const base = {type: 'Chamada', x: 40, y: 40, w: 60, h: 60, font: 18, thick: 3, color: '#000',
+                          text: ['Uma linha bem mais comprida que a outra', 'ok'].join(String.fromCharCode(10)), textW: 150};
+            const medidas = ['left', 'center', 'right'].map(align => {
+                const shape = {...base, align};
+                return medirTinta(shape, calloutTextRect(shape));
+            });
+            if (medidas.some(m => m.peso === 0)) return false;
+            const [esq, meio, dir] = medidas;
+            if (!(esq.centro < meio.centro && meio.centro < dir.centro)) return false;
+            // Bloco ancorado: a caixa de tinta fica no lugar (a folga de alguns
+            // pixels e do antisserrilhado). Alinhar dentro da caixa larga, e nao
+            // dentro do bloco, jogaria o texto dezenas de pixels para o lado.
+            return Math.abs(esq.min - dir.min) <= 3 && Math.abs(esq.max - dir.max) <= 3;
+        })()""")
+        print("OK: alinhamento move as linhas no texto e mantem a chamada colada no pe da seta")
+
+        # --- os botoes da faixa: exclusivos, espelhados nas duas guias e aplicados ---
+        check("""(() => {
+            annotations.length = 0;
+            selectedIndex = -1;
+            selectTool('Texto', false);
+            const clicar = align => byId('btn-align-' + align).click();
+            const marcados = () => ['left', 'center', 'right']
+                .filter(a => byId('btn-align-' + a).classList.contains('active'));
+            clicar('center');
+            // Um marcado por vez, e a guia Edicao mostra o mesmo.
+            if (marcados().join() !== 'center') return false;
+            if (!byId('ed-btn-align-center').classList.contains('active')) return false;
+            if (byId('btn-align-center').getAttribute('aria-pressed') !== 'true') return false;
+            if (currentTextAlign() !== 'center' || getOptions().align !== 'center') return false;
+            // Clicar na guia Edicao volta o estado para a guia Inicio.
+            byId('ed-btn-align-right').click();
+            if (marcados().join() !== 'right' || currentTextAlign() !== 'right') return false;
+            // A escolha chega na marcacao selecionada.
+            annotations.push({type: 'Texto', x: 20, y: 20, w: 200, h: 60, text: 'abc', font: 20, color: '#000'});
+            selectedIndex = 0;
+            byId('btn-align-center').click();
+            if (annotations[0].align !== 'center') return false;
+            // E e lida de volta ao selecionar outra marcacao.
+            annotations.push({type: 'Chamada', x: 10, y: 10, w: 60, h: 40, text: 'x', font: 18, thick: 3, color: '#000', align: 'right'});
+            syncFormatControlsFromSelection(annotations[1]);
+            if (currentTextAlign() !== 'right') return false;
+            // Cota, balao e triangulo guardam um valor so: os botoes apagam neles.
+            selectedIndex = -1;
+            selectTool('Balao', false);
+            if (!byId('btn-align-left').disabled || !byId('ed-btn-align-left').disabled) return false;
+            selectTool('Texto', false);
+            if (byId('btn-align-left').disabled) return false;
+            annotations.length = 0;
+            selectTool('Mover', false);
+            return true;
+        })()""")
+        print("OK: botoes de alinhamento exclusivos, espelhados nas duas guias e aplicados a selecao")
+
+        # --- o alinhamento sobrevive ao salvar e reabrir as preferencias ---
+        check("""(() => {
+            const original = appSettings;
+            try {
+                setTextAlign('center');
+                if (readPreferences().text_align !== 'center') return false;
+                applySettings({...original, ...readPreferences(), text_align: 'right'});
+                if (currentTextAlign() !== 'right') return false;
+                // Valor estranho no arquivo nao pode deixar a faixa sem marcado nenhum.
+                applySettings({...original, ...readPreferences(), text_align: 'justificado'});
+                return currentTextAlign() === 'left';
+            } finally {
+                applySettings(original);
+            }
+        })()""")
+        print("OK: alinhamento gravado nas preferencias e restaurado na abertura")
+
         # --- desenho de verdade com o mouse: nuvem a mao livre e caixa de texto ---
         js("annotations.length = 0; selectedIndex = -1; clearStroke(); fitToWorkspace()")
 
