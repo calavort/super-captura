@@ -26,7 +26,18 @@ STATE_DIR = ".atualizacoes"
 MANIFEST = "manifesto-release.json"
 MAX_PACKAGE = 80 * 1024 * 1024
 MAX_EXPANDED = 160 * 1024 * 1024
-# An explicit list prevents personal data from being shipped or overwritten.
+MAX_FILES = 200
+MAX_DEPTH = 4
+MAX_NAME = 180
+LAUNCHER_DEFAULT = "app.py"
+_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{n}" for n in range(1, 10)}
+    | {f"LPT{n}" for n in range(1, 10)}
+)
+_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]*")
+# Lista desta versao: e o que o publicador empacota e o que se assume ter
+# sido instalado quando ainda nao existe registro de uma instalacao anterior.
 APP_FILES = (
     "app.py", "atualizador.py", "atualizador_ui.py", "versao.json",
     "interface-super-captura.html",
@@ -56,6 +67,9 @@ def read_version(root: Path) -> dict:
         version_tuple(info["version"])
         if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", info["repository"]):
             raise ValueError("repository")
+        # Onde fica o programa. Sem isso, mover app.py deixaria o instalador
+        # tentando reabrir um caminho que nao existe mais.
+        info["launcher"] = check_package_name(info.get("launcher") or LAUNCHER_DEFAULT)
         return info
     except (OSError, ValueError, KeyError, TypeError) as exc:
         raise UpdateError("Nao foi possivel ler versao.json.") from exc
@@ -76,9 +90,35 @@ def write_json(path: Path, value: dict) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def safe_target(root: Path, relative: str) -> Path:
-    if relative not in APP_FILES:
+def check_package_name(relative: str) -> str:
+    """Aceita um caminho do pacote pela forma, sem lista fixa.
+
+    Recusa caminho absoluto, letra de unidade, barra invertida, \"..\",
+    segmento terminado em espaco ou ponto e nome reservado do Windows
+    (CON, NUL, COM1...). Assim o pacote escolhe os proprios arquivos sem
+    conseguir escrever fora da pasta de instalacao.
+    """
+    if not isinstance(relative, str) or not relative or len(relative) > MAX_NAME:
+        raise UpdateError(f"Nome de arquivo invalido no pacote: {relative!r}")
+    if relative != relative.strip() or "\\" in relative or ":" in relative:
+        raise UpdateError(f"Nome de arquivo invalido no pacote: {relative!r}")
+    partes = relative.split("/")
+    if not 1 <= len(partes) <= MAX_DEPTH:
+        raise UpdateError(f"Caminho fundo demais no pacote: {relative!r}")
+    for parte in partes:
+        if parte in ("", ".", "..") or parte.endswith((" ", ".")):
+            raise UpdateError(f"Nome de arquivo invalido no pacote: {relative!r}")
+        if not _SEGMENT.fullmatch(parte):
+            raise UpdateError(f"Nome de arquivo invalido no pacote: {relative!r}")
+        if parte.split(".")[0].upper() in _RESERVED_NAMES:
+            raise UpdateError(f"Nome reservado pelo Windows no pacote: {relative!r}")
+    return relative
+
+
+def safe_target(root: Path, relative: str, allowed=None) -> Path:
+    if allowed is not None and relative not in allowed:
         raise UpdateError(f"Arquivo nao permitido no pacote: {relative}")
+    check_package_name(relative)
     root = root.resolve()
     target = root / relative
     for part in (target, *target.parents):
@@ -97,6 +137,23 @@ def state_path(root: Path) -> Path:
         raise UpdateError("A pasta de atualizacoes nao pode ser um link.")
     target.mkdir(parents=True, exist_ok=True)
     return target
+
+
+def installed_files(root: Path) -> tuple[str, ...]:
+    """Arquivos gravados pela ultima instalacao.
+
+    Serve para apagar o que a versao nova nao traz mais - um arquivo movido
+    de pasta ficaria duplicado sem isso. Antes da primeira instalacao feita
+    por este codigo nao ha registro, e a lista desta versao e a aposta certa.
+    """
+    registro = state_path(root) / "arquivos.json"
+    try:
+        nomes = json.loads(registro.read_text(encoding="utf-8"))["files"]
+        if isinstance(nomes, list) and 1 <= len(nomes) <= MAX_FILES:
+            return tuple(check_package_name(nome) for nome in nomes)
+    except (OSError, ValueError, KeyError, TypeError, UpdateError):
+        pass
+    return APP_FILES
 
 
 class _FileLock:
@@ -330,8 +387,6 @@ def unpack_package(archive: Path, destination: Path, version: str, repository: s
             names = [entry.filename for entry in entries]
             if len(names) != len(set(name.casefold() for name in names)):
                 raise UpdateError("O pacote possui arquivos duplicados.")
-            if set(names) != set(APP_FILES) | {MANIFEST}:
-                raise UpdateError("O pacote contem arquivos inesperados ou esta incompleto.")
             if sum(entry.file_size for entry in entries) > MAX_EXPANDED:
                 raise UpdateError("Pacote descompactado maior que o permitido.")
             for entry in entries:
@@ -341,17 +396,28 @@ def unpack_package(archive: Path, destination: Path, version: str, repository: s
                 raise UpdateError("Manifesto maior que o permitido.")
             manifest = json.loads(package.read(MANIFEST))
             if (manifest["app_id"] != APP_ID or manifest["version"] != version
-                    or manifest["repository"] != repository or manifest["schema"] != 1
-                    or set(manifest["files"]) != set(APP_FILES)):
+                    or manifest["repository"] != repository or manifest["schema"] != 1):
                 raise UpdateError("O manifesto nao corresponde a esta atualizacao.")
+            # A lista de arquivos vem do pacote, nao de uma lista fixa daqui:
+            # e o que permite uma versao nova reorganizar as pastas. O que a
+            # trava garantia continua garantido pela forma de cada caminho.
+            declarados = manifest["files"]
+            if not isinstance(declarados, dict) or not 1 <= len(declarados) <= MAX_FILES:
+                raise UpdateError("Lista de arquivos do pacote invalida.")
+            for name in declarados:
+                check_package_name(name)
+            if set(names) != set(declarados) | {MANIFEST}:
+                raise UpdateError("O pacote contem arquivos inesperados ou esta incompleto.")
+            if "versao.json" not in declarados:
+                raise UpdateError("O pacote nao traz a marca de versao.")
             minimum = tuple(manifest["python_min"])
             if minimum != (3, 11) or sys.version_info[:2] < minimum:
                 raise UpdateError("Esta versao exige Python 3.11 ou superior.")
-            for name in APP_FILES:
+            for name in sorted(declarados):
                 data = package.read(name)
-                if hashlib.sha256(data).hexdigest() != manifest["files"][name]:
+                if hashlib.sha256(data).hexdigest() != declarados[name]:
                     raise UpdateError(f"Arquivo corrompido: {name}")
-                if name.endswith(".py"):
+                if name.endswith((".py", ".pyw")):
                     compile(data, name, "exec")
                 target = safe_target(destination, name)
                 target.parent.mkdir(parents=True, exist_ok=True)
@@ -359,6 +425,8 @@ def unpack_package(archive: Path, destination: Path, version: str, repository: s
             info = read_version(destination)
             if info["version"] != version or info["repository"] != repository:
                 raise UpdateError("A versao interna do pacote esta incorreta.")
+            if info["launcher"] not in declarados:
+                raise UpdateError("O programa apontado por versao.json nao veio no pacote.")
             return manifest
     except (zipfile.BadZipFile, ValueError, KeyError, TypeError, SyntaxError) as exc:
         raise UpdateError("Pacote de atualizacao invalido ou corrompido.") from exc
@@ -373,14 +441,20 @@ def install_package(archive: Path, root: Path, version: str, repository: str) ->
     backup = state / ("backup-" + current["version"] + "-" + uuid.uuid4().hex[:10])
     with tempfile.TemporaryDirectory(prefix="stage-", dir=state) as temporary:
         staged = Path(temporary)
-        unpack_package(archive, staged, version, repository)
+        manifest = unpack_package(archive, staged, version, repository)
         # Source updates never run pip behind the user's back.
         if (staged / "requirements.txt").read_bytes() != (root / "requirements.txt").read_bytes():
             raise UpdateError("Esta versao altera as bibliotecas. Faca a instalacao manual do pacote.")
-        targets = {name: safe_target(root, name) for name in APP_FILES}
+        novos = sorted(manifest["files"])
+        # O que a instalacao tinha e o pacote nao traz mais sai de cena: sem
+        # isso um arquivo que mudou de pasta ficaria nos dois lugares.
+        obsoletos = sorted(set(installed_files(root)) - set(novos))
+        tocados = sorted(set(novos) | set(obsoletos))
+        targets = {name: safe_target(root, name) for name in tocados}
         backup.mkdir()
         existing = []
-        for name, target in targets.items():
+        for name in tocados:
+            target = targets[name]
             if target.exists():
                 if not target.is_file():
                     raise UpdateError(f"O destino nao e um arquivo: {name}")
@@ -388,18 +462,21 @@ def install_package(archive: Path, root: Path, version: str, repository: str) ->
                 saved.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(target, saved)
                 existing.append(name)
-        journal = {"backup": backup.name, "existing": existing, "files": list(APP_FILES), "version": version}
+        journal = {"backup": backup.name, "existing": existing, "files": tocados, "version": version}
         write_json(state / "transacao.json", journal)
         try:
             # The version marker changes last, after all executable/UI files.
-            for name in sorted(APP_FILES, key=lambda item: item == "versao.json"):
+            for name in sorted(novos, key=lambda item: item == "versao.json"):
                 target = targets[name]
                 target.parent.mkdir(parents=True, exist_ok=True)
                 os.replace(staged / name, target)
+            for name in obsoletos:
+                targets[name].unlink(missing_ok=True)
         except Exception:
             recover_transaction(root)
             raise
         (state / "transacao.json").unlink()
+    write_json(state / "arquivos.json", {"version": version, "files": novos})
     return backup
 
 
@@ -410,7 +487,12 @@ def recover_transaction(root: Path) -> bool:
     journal = json.loads(journal_path.read_text(encoding="utf-8"))
     if not re.fullmatch(r"backup-[0-9.]+-[a-f0-9]{10}", journal["backup"]):
         raise UpdateError("Registro de recuperacao invalido.")
-    if set(journal["files"]) != set(APP_FILES) or not set(journal["existing"]).issubset(APP_FILES):
+    nomes = journal["files"]
+    if not isinstance(nomes, list) or not 1 <= len(nomes) <= MAX_FILES:
+        raise UpdateError("Lista de recuperacao invalida.")
+    for nome in nomes:
+        check_package_name(nome)
+    if not set(journal["existing"]).issubset(nomes):
         raise UpdateError("Lista de recuperacao invalida.")
     backup = state_path(root) / journal["backup"]
     for name in journal["files"]:
@@ -430,7 +512,8 @@ def recover_transaction(root: Path) -> bool:
 def prepare_installer(archive: Path, root: Path, release: Release) -> Path:
     state = state_path(root)
     helper = state / "instalador.py"
-    shutil.copy2(root / "atualizador.py", helper)
+    # Copia deste proprio modulo: assim ele pode viver em qualquer pasta.
+    shutil.copy2(Path(__file__).resolve(), helper)
     plan = state / "plano.json"
     write_json(plan, {"root": str(root.resolve()), "archive": str(archive.resolve()),
                       "version": release.version, "repository": release.repository,
@@ -472,7 +555,13 @@ def run_installer(plan_path: Path) -> int:
         lock.release()
     if (state / "transacao.json").exists():
         return 1
-    subprocess.Popen([plan["python"], str(root / "app.py")], cwd=root,
+    # O caminho vem do versao.json recem-instalado, entao a versao nova pode
+    # ter movido o programa de pasta.
+    try:
+        launcher = read_version(root)["launcher"]
+    except UpdateError:
+        launcher = LAUNCHER_DEFAULT
+    subprocess.Popen([plan["python"], str(root / launcher)], cwd=root,
                      creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
     return 0
 
