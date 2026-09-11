@@ -1655,6 +1655,9 @@ function createFloatingTextEditor({kind, point, options, shape = null, editIndex
     editor.value = initialText;
     canvasContainer.appendChild(editor);
     activeTextEditor = {kind, editor, x: point.x, y: point.y, options, shape, editIndex};
+    // Redesenha já: a anotação sob o editor precisa perder o texto agora, não
+    // só no próximo quadro que algum outro evento provocar.
+    if (Number.isInteger(editIndex)) redraw();
     // stopPropagation apenas no mousedown: impede que o clique inicial feche o
     // editor (handler global), sem bloquear a seleção nativa por arraste.
     editor.addEventListener("mousedown", event => event.stopPropagation());
@@ -2210,7 +2213,8 @@ function redraw() {
     ctx.imageSmoothingQuality = "low";
     ctx.clearRect(0, 0, docWidth, docHeight);
     ctx.drawImage(backgroundRenderSource(scale), 0, 0, docWidth, docHeight);
-    annotations.forEach((annotation, index) => drawShape(ctx, annotation, index === selectedIndex));
+    annotations.forEach((annotation, index) =>
+        drawShape(ctx, drawableAnnotation(annotation, index), index === selectedIndex));
     if (preview) drawShape(ctx, preview, false, true);
 }
 
@@ -2236,7 +2240,8 @@ function drawEditionWorkspace() {
         if (source) ctx.drawImage(source, item.x, item.y, item.w, item.h);
         if (index === selectedEditionItemIndex) drawEditionImageSelection(item);
     });
-    annotations.forEach((annotation, index) => drawShape(ctx, annotation, index === selectedIndex));
+    annotations.forEach((annotation, index) =>
+        drawShape(ctx, drawableAnnotation(annotation, index), index === selectedIndex));
     if (preview) drawShape(ctx, preview, false, true);
     ctx.restore();
 }
@@ -2252,6 +2257,20 @@ function drawEditionImageSelection(item) {
     ctx.fillStyle = "#F2A100";
     ctx.fillRect(handle.x - 5, handle.y - 5, 10, 10);
     ctx.restore();
+}
+
+// A anotação aberta no editor flutuante não tem o texto pintado no canvas: o
+// editor já mostra o texto por cima, e as duas camadas juntas - deslocadas pelo
+// recheio do textarea - pareciam borradas. Só o texto some; o desenho em volta
+// continua, e com ele toda a geometria (raio do balão, caixa da cota, "R" do
+// triângulo), que depende do texto guardado.
+function annotationBeingEdited(index) {
+    return Boolean(activeTextEditor) && Number.isInteger(activeTextEditor.editIndex)
+        && activeTextEditor.editIndex === index;
+}
+
+function drawableAnnotation(shape, index) {
+    return annotationBeingEdited(index) ? {...shape, textHidden: true} : shape;
 }
 
 function drawShape(context, shape, selected = false, temporary = false) {
@@ -2439,7 +2458,7 @@ function drawFreeDimension(context, shape) {
         context.stroke();
     });
 
-    if (shape.text) {
+    if (shape.text && !shape.textHidden) {
         context.save();
         context.translate(midX, midY);
         let textAngle = angle;
@@ -2494,7 +2513,7 @@ function drawAngleDimension(context, shape) {
     context.arc(shape.x, shape.y, arcRadius, 0, endAngle, endAngle < 0);
     context.stroke();
 
-    if (shape.text) {
+    if (shape.text && !shape.textHidden) {
         const midAngle = endAngle / 2;
         const textRadius = arcRadius + shape.font / 2 + 8;
         context.font = annotationFont(shape);
@@ -2588,7 +2607,7 @@ function drawCallout(context, shape) {
     context.lineTo(endX + landing * dir, endY);
     context.stroke();
 
-    if (!shape.text) return;
+    if (!shape.text || shape.textHidden) return;
     const layout = calloutTextLayout(context, shape);
     const rect = calloutTextRect(shape, layout);
     context.save();
@@ -2968,6 +2987,7 @@ function textBoxLayout(context, shape) {
 
 function drawTextBox(context, shape) {
     const layout = textBoxLayout(context, shape);
+    if (shape.textHidden) return;
     context.textAlign = "left";
     context.textBaseline = "top";
     shape.h = shape.autoHeight === false
@@ -3096,7 +3116,7 @@ function drawBalloonBadge(context, shape) {
     context.font = `bold ${fontSize}px 'Segoe UI'`;
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.fillText(shape.text, badgeX, badgeY + 1);
+    if (!shape.textHidden) context.fillText(shape.text, badgeX, badgeY + 1);
 }
 
 // Piso proporcional (antes fixo em 26): assim o triângulo acompanha de verdade
@@ -3143,7 +3163,9 @@ function drawReviewMarker(context, shape) {
     context.font = `${shape.bold === false ? "" : "bold "}${reviewMarkerFontSize(shape)}px 'Segoe UI'`;
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.fillText(String(shape.text || "R"), shape.x, shape.y + geometry.height * 0.08);
+    if (!shape.textHidden) {
+        context.fillText(String(shape.text || "R"), shape.x, shape.y + geometry.height * 0.08);
+    }
     context.restore();
 }
 
