@@ -302,26 +302,6 @@ function readPreferences() {
     };
 }
 
-function toggleAdvancedFormat(event, button) {
-    event.preventDefault();
-    event.stopPropagation();
-    const dialog = byId("advanced-format-dialog");
-    if (!dialog) return;
-    const group = button.closest(".ribbon-group");
-    const rect = (group || button).getBoundingClientRect();
-    const dialogWidth = dialog.offsetWidth || 205;
-    dialog.style.top = `${rect.bottom + 4}px`;
-    dialog.style.left = `${Math.max(4, rect.left + rect.width / 2 - dialogWidth / 2)}px`;
-    dialog.classList.toggle("active");
-}
-
-document.addEventListener("mousedown", event => {
-    const dialog = byId("advanced-format-dialog");
-    if (!dialog || !dialog.classList.contains("active")) return;
-    if (dialog.contains(event.target) || event.target.closest(".dialog-launcher")) return;
-    dialog.classList.remove("active");
-}, true);
-
 function persistPreferences() {
     clearTimeout(preferenceTimer);
     preferenceTimer = setTimeout(() => {
@@ -1267,8 +1247,9 @@ const toolConfigMenus = {
     Chamada: {title: "Linha de chamada", size: true},
     CotaLivre: {title: "Cota livre", size: true},
     CotaAngulo: {title: "Cota de ângulo", size: true},
-    Texto: {title: "Texto", size: true},
-    Balao: {title: "Balão numerado", size: true, fill: "balao", text: "Balao"},
+    Texto: {title: "Texto", size: true, check: {id: "cfg-texto-auto", rotulo: "Caixa acompanha o texto"}},
+    Balao: {title: "Balão numerado", size: true, fill: "balao", text: "Balao",
+            check: {id: "cfg-balao-line", rotulo: "Com linha de chamada"}},
     Revisao: {title: "Triângulo de revisão", size: true, fill: "revisao", text: "Revisao"},
     Nuvem: {title: "Nuvem de revisão", size: true, cloud: true}
 };
@@ -1380,6 +1361,12 @@ function renderToolConfigMenu(popover, tool) {
             + '<div class="config-hint" style="margin-top:8px">À mão livre, termine o risco'
             + ' perto do início para fechar a nuvem.</div>';
     }
+    if (config.check) {
+        const marcado = byId(config.check.id) && byId(config.check.id).checked;
+        html += '<label class="config-check" style="margin-top:12px">'
+            + '<input type="checkbox" class="config-extra"' + (marcado ? " checked" : "") + ">"
+            + "<span>" + config.check.rotulo + "</span></label>";
+    }
     if (config.text) {
         const atual = String(byId("cfg-numero").value || "1");
         html += '<span class="picker-label">Texto</span>'
@@ -1421,6 +1408,14 @@ function renderToolConfigMenu(popover, tool) {
             positionFormatPopover();
         };
     });
+    const extra = popover.querySelector(".config-extra");
+    if (extra) {
+        extra.onchange = () => {
+            const alvo = byId(config.check.id);
+            if (alvo) alvo.checked = extra.checked;
+            handleFormatControlChanged();
+        };
+    }
     const campoTexto = popover.querySelector(".config-text-input");
     if (campoTexto) {
         campoTexto.oninput = () => {
@@ -1869,7 +1864,7 @@ document.addEventListener("mousedown", event => {
     // Controles de formatação NÃO concluem a edição: aplicam-se ao texto aberto
     // (comportamento PowerPoint: selecionar texto e clicar em Negrito etc.).
     const formatControl = event.target.closest(
-        '.ribbon-group[data-title="Formatação"], #advanced-format-dialog, .dialog-launcher, .format-popover');
+        '.ribbon-group[data-title="Formatação"], .format-popover');
     if (formatControl) {
         // Botões de estilo não roubam o foco, mantendo a seleção visível.
         if (event.target.closest(".style-btn")) event.preventDefault();
@@ -3075,7 +3070,15 @@ function drawBalloonBadge(context, shape) {
     const badgeX = badge.x;
     const badgeY = badge.y;
     if (shape.lineBalloon && (Math.abs(shape.w || 0) > 1 || Math.abs(shape.h || 0) > 1)) {
-        drawArrow(context, badgeX, badgeY, shape.x, shape.y, shape.thick, fontSize);
+        // A linha nasce na borda do círculo, não no centro dele: saindo do centro
+        // ela atravessava o balão por dentro e encostava no número. Quando o alvo
+        // cai dentro do próprio balão não sobra linha para desenhar.
+        const rumo = Math.atan2(shape.y - badgeY, shape.x - badgeX);
+        const distancia = Math.hypot(shape.x - badgeX, shape.y - badgeY);
+        if (distancia > radius + 1) {
+            drawArrow(context, badgeX + Math.cos(rumo) * radius, badgeY + Math.sin(rumo) * radius,
+                      shape.x, shape.y, shape.thick, fontSize);
+        }
     }
 
     context.beginPath();

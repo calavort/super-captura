@@ -92,39 +92,62 @@ def main():
         })()""")
         print("OK: canvas com supersampling e traco suavizado")
 
-        # --- caixa de opcoes acessivel nas duas guias ---
+        # --- opcoes de cada ferramenta acessiveis nas duas guias ---
+        # A caixa "Opcoes de anotacao" saiu: cada ferramenta leva as suas no
+        # proprio menu. O que antes se pedia da caixa, pede-se agora do menu.
         check("""(() => {
-            const dialogo = byId('advanced-format-dialog');
-            const dentroDeGuia = dialogo.closest('.ribbon-content');
-            const abre = indice => {
-                const botao = document.querySelectorAll('.dialog-launcher')[indice];
-                dialogo.classList.remove('active');
-                toggleAdvancedFormat(new MouseEvent('click'), botao);
-                const caixa = dialogo.getBoundingClientRect();
-                return dialogo.classList.contains('active') && caixa.width > 0 && caixa.height > 0
-                    && caixa.right <= innerWidth && caixa.bottom <= innerHeight;
+            const abre = (aba, indice) => {
+                document.querySelector('.ribbon-tab[onclick*=' + aba + ']').click();
+                const gatilhos = document.querySelectorAll(
+                    '.tool-btn[data-tool="Balao"] + .stroke-menu-trigger');
+                closeFormatPopover();
+                gatilhos[indice].click();
+                const menu = byId('tool-config-popover');
+                const caixa = menu.getBoundingClientRect();
+                const completo = menu.querySelector('.config-size')
+                    && menu.querySelector('[data-fill]')
+                    && menu.querySelector('.config-text-input')
+                    && menu.querySelector('.config-seq')
+                    && menu.querySelector('.config-extra');
+                const ok = !menu.hidden && caixa.width > 0 && caixa.height > 0
+                    && caixa.right <= innerWidth && caixa.bottom <= innerHeight && completo;
+                closeFormatPopover();
+                return ok;
             };
+            const naInicial = abre('tab-home', 0);
+            const naEdicao = abre('tab-edicao', 1);
             document.querySelector('.ribbon-tab[onclick*=tab-home]').click();
-            const naInicial = abre(0);
-            document.querySelector('.ribbon-tab[onclick*=tab-edicao]').click();
-            const naEdicao = abre(1);
-            dialogo.classList.remove('active');
-            document.querySelector('.ribbon-tab[onclick*=tab-home]').click();
-            return !dentroDeGuia && naInicial && naEdicao;
+            // A caixa antiga e o gatilho dela nao existem mais na faixa.
+            const semCaixa = document.querySelectorAll('.dialog-launcher').length === 0
+                && byId('advanced-format-dialog').hidden
+                && typeof toggleAdvancedFormat === 'undefined';
+            return naInicial && naEdicao && semCaixa;
         })()""")
-        print("OK: caixa de opcoes de anotacao abre nas guias Pagina Inicial e Edicao")
+        print("OK: opcoes de cada ferramenta no menu dela, nas duas guias")
 
-        # --- cada ferramenta com o seu tamanho e o rotulo do campo ---
-        js("selectTool('Nuvem')")
-        check("byId('cfg-fonte').value === String(toolSizes.Nuvem) && byId('label-fonte').textContent.startsWith('Raio')")
-        js("byId('cfg-fonte').value = 18; handleFormatControlChanged()")
+        # --- cada ferramenta com o seu tamanho e o seu rotulo ---
+        # O rotulo saiu da faixa: quem o mostra agora e a secao do menu, e o
+        # campo do menu e quem traz o valor guardado da ferramenta.
+        def rotulo_e_valor(ferramenta):
+            js(f"""closeFormatPopover();
+                document.querySelector('.tool-btn[data-tool="{ferramenta}"] + .stroke-menu-trigger').click();""")
+            return js("""JSON.stringify([
+                byId('tool-config-popover').querySelector('.picker-label').textContent,
+                byId('tool-config-popover').querySelector('.config-size').value
+            ])""")
+
+        assert json.loads(rotulo_e_valor("Nuvem"))[0].startswith("Raio")
+        js("""(() => {
+            const campo = byId('tool-config-popover').querySelector('.config-size');
+            campo.value = 18; campo.dispatchEvent(new Event('input'));
+        })()""")
         check("toolSizes.Nuvem === 18")
-        js("selectTool('Balao')")
-        check("byId('cfg-fonte').value === String(toolSizes.Balao) && byId('label-fonte').textContent.startsWith('Balão')")
-        js("selectTool('Revisao')")
-        check("byId('label-fonte').textContent.startsWith('Triângulo')")
-        js("selectTool('Nuvem')")
+        assert json.loads(rotulo_e_valor("Balao"))[0].startswith("Balão")
+        assert json.loads(rotulo_e_valor("Revisao"))[0].startswith("Triângulo")
+        # Ao voltar para a nuvem o valor dela continua la, nao o do triangulo.
+        assert json.loads(rotulo_e_valor("Nuvem"))[1] == "18"
         check("toolSizes.Nuvem === 18 && byId('cfg-fonte').value === '18'")
+        js("closeFormatPopover()")
         print("OK: tamanho e rotulo proprios de cada ferramenta, preservados ao trocar")
 
         # --- nuvem: raio configuravel e traco a mao livre ---

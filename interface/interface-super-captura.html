@@ -368,6 +368,8 @@
             min-width: 205px;
         }
         .advanced-dialog.active { display: flex; }
+        /* Porta-interruptores: o <div> existe so para a logica ler deles. */
+        .advanced-dialog[hidden] { display: none !important; }
         .advanced-dialog .dialog-hint {
             margin-top: 4px;
             padding-top: 6px;
@@ -780,9 +782,6 @@
                         </svg>
                     </button>
                 </div>
-                <button class="dialog-launcher" onclick="toggleAdvancedFormat(event, this)" title="Opções de anotação">
-                    <span class="material-symbols-outlined">open_in_new</span>
-                </button>
             </div>
 
 
@@ -808,11 +807,12 @@
                         <button class="color-trigger" type="button" data-color-picker title="Cores" aria-label="Escolher cor" aria-expanded="false"><span class="color-chip"></span><span class="picker-chevron"><svg class="caret-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg></span></button>
                         <input type="number" class="config-input short" id="cfg-espessura" value="4" min="1" max="20">
                     </div>
-                    <div class="config-row">
-                        <label style="width: 60px;" id="label-fonte">Fonte/Nº</label>
-                        <input type="number" class="config-input short" id="cfg-fonte" value="28" min="8" max="200" style="margin-right: 4px;">
-                        <input type="text" class="config-input short" id="cfg-numero" value="1" title="Número ou letra do balão e da revisão; avança sozinho a cada marcação">
-                    </div>
+                    <!-- Tamanho e número vivem no menu de cada ferramenta (a setinha ao
+                         lado do botão). Os campos ficam aqui, ocultos, porque é por eles que
+                         passam getOptions, a gravação das preferências e a sincronia entre as
+                         duas guias. -->
+                    <input type="hidden" id="cfg-fonte" value="28">
+                    <input type="hidden" id="cfg-numero" value="1">
                 </div>
             </div>
 
@@ -920,9 +920,6 @@
                     <button class="btn btn-icon-only tool-btn" data-tool="CotaAngulo" title="Cota de Ângulo"><span class="material-symbols-outlined">architecture</span></button>
                     <button class="btn btn-icon-only tool-btn" data-tool="Revisao" title="Revisão"><svg class="revision-icon" viewBox="0 0 24 22" aria-hidden="true"><polygon points="12,2 22,20 2,20"></polygon><text x="12" y="14">R</text></svg></button>
                 </div>
-                <button class="dialog-launcher" onclick="toggleAdvancedFormat(event, this)" title="Opções de anotação">
-                    <span class="material-symbols-outlined">open_in_new</span>
-                </button>
             </div>
 
             <div class="ribbon-group" data-title="Formatação">
@@ -941,11 +938,8 @@
                         <button class="color-trigger" type="button" data-color-picker title="Cores" aria-label="Escolher cor" aria-expanded="false"><span class="color-chip"></span><span class="picker-chevron"><svg class="caret-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg></span></button>
                         <input type="number" class="config-input short" id="ed-cfg-espessura" value="4" min="1" max="20" onchange="syncMainFormatControlsFromEdition()">
                     </div>
-                    <div class="config-row">
-                        <label style="width: 60px;" id="ed-label-fonte">Fonte/Nº</label>
-                        <input type="number" class="config-input short" id="ed-cfg-fonte" value="28" min="8" max="200" style="margin-right: 4px;" onchange="syncMainFormatControlsFromEdition()">
-                        <input type="text" class="config-input short" id="ed-cfg-numero" value="1" title="Número ou letra do balão e da revisão" onchange="syncMainFormatControlsFromEdition()">
-                    </div>
+                    <input type="hidden" id="ed-cfg-fonte" value="28">
+                    <input type="hidden" id="ed-cfg-numero" value="1">
                 </div>
             </div>
 
@@ -1123,24 +1117,15 @@
         </div>
     </div>
 
-    <div id="advanced-format-dialog" class="advanced-dialog">
-        <div style="font-size: 11px; font-weight: 600; color: #605E5C; margin-bottom: 6px; text-transform: uppercase;">Opções de anotação</div>
-        <label class="checkbox-label">
-            <input type="checkbox" id="cfg-balao-fill" class="config-checkbox" checked> Balão preenchido
-        </label>
-        <label class="checkbox-label">
-            <input type="checkbox" id="cfg-balao-line" class="config-checkbox"> Balão com linha de chamada
-        </label>
-        <label class="checkbox-label">
-            <input type="checkbox" id="cfg-revisao-fill" class="config-checkbox"> Triângulo de revisão preenchido
-        </label>
-        <label class="checkbox-label">
-            <input type="checkbox" id="cfg-nuvem-livre" class="config-checkbox"> Nuvem de revisão à mão livre
-        </label>
-        <label class="checkbox-label">
-            <input type="checkbox" id="cfg-texto-auto" class="config-checkbox" checked> Caixa de texto acompanha o texto
-        </label>
-        <div class="dialog-hint">O campo de tamanho da faixa muda com a ferramenta: fonte, balão, triângulo, ponta da seta ou raio da nuvem. O número do balão e da revisão avança sozinho (1, 2, 3 / A, B, C / R1, R2).</div>
+    <!-- A caixa "Opções de anotação" saiu: cada um destes interruptores mora
+         agora no menu da sua ferramenta. Continuam aqui, ocultos, porque a
+         gravação das preferências e getOptions leem deles. -->
+    <div id="advanced-format-dialog" class="advanced-dialog" hidden>
+        <input type="checkbox" id="cfg-balao-fill" checked>
+        <input type="checkbox" id="cfg-balao-line">
+        <input type="checkbox" id="cfg-revisao-fill">
+        <input type="checkbox" id="cfg-nuvem-livre">
+        <input type="checkbox" id="cfg-texto-auto" checked>
     </div>
 
     <div class="workspace" id="workspace">
