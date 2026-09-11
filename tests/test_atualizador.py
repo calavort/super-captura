@@ -22,7 +22,12 @@ from publicar_release import build_package
 class UpdateTests(unittest.TestCase):
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory(prefix="super-captura-test-")
-        self.base = Path(self.temporary.name)
+        # resolve(): safe_target resolve a raiz antes de montar o destino, entao
+        # a comparacao de caminhos aqui tem que partir do caminho ja resolvido.
+        # Onde o TEMP tem nome curto 8.3 - os runners Windows do GitHub sao
+        # assim - os dois lados nao casavam, a falha do rollback nunca era
+        # injetada e o teste passava sem testar nada.
+        self.base = Path(self.temporary.name).resolve()
         self.source = self.base / "fonte"
         self.target = self.base / "instalacao"
         for root in (self.source, self.target):
