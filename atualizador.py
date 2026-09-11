@@ -144,7 +144,14 @@ def running_instances(root: Path, exclude: Path | None = None) -> int:
         probe = _FileLock(path)
         try:
             if probe.acquire():
-                probe.release()  # Stale file left by a terminated process.
+                # Stale file left by a terminated process. Every caller holds the
+                # gate lock, so no live lease can appear mid-scan: deleting here
+                # keeps the folder from filling up with one file per closed window.
+                probe.release()
+                try:
+                    path.unlink(missing_ok=True)
+                except OSError:
+                    pass
             else:
                 count += 1
         except OSError:
