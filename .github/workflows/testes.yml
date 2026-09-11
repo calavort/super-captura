@@ -1,0 +1,43 @@
+# Roda as suites que nao precisam de tela, toda vez que algo chega no GitHub.
+# Elas cobrem justamente o que mais doi quando quebra: empacotar uma versao,
+# conferir o checksum e instalar a atualizacao sem perder arquivo pelo caminho.
+#
+# As suites de interface (tests/validar_*.py) ficam de fora de proposito: abrem
+# janela Qt de verdade, precisam de tela e do PySide6 instalado. Continuam
+# sendo rodadas a mao antes de publicar.
+name: Testes
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  testes:
+    name: Python ${{ matrix.python }}
+    runs-on: windows-latest
+
+    strategy:
+      # Sem fail-fast: se a 3.11 quebrar, ainda quero ver como foi na 3.13.
+      fail-fast: false
+      matrix:
+        # 3.11 e o minimo que o manifesto promete; 3.13 e o que roda aqui.
+        python: ["3.11", "3.13"]
+
+    env:
+      PYTHONIOENCODING: utf-8
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      # Nenhum pip install: as duas suites usam so a biblioteca padrao. O
+      # PySide6 do requirements.txt e do programa, nao delas.
+      - name: Atualizador
+        run: python tests/test_atualizador.py
+
+      - name: Publicacao
+        run: python tests/test_publicacao.py
