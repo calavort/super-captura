@@ -32,21 +32,45 @@ RECURSOS
 - Áudio do microfone e suporte ao áudio do sistema quando o dispositivo
   "Mixagem Estéreo/Stereo Mix" estiver habilitado no Windows.
 - Texto em caixa editável no canvas: clique, digite, ajuste a área e conclua
-  clicando fora ou pressionando ESC.
+  clicando fora ou pressionando ESC. A caixa se comporta como no PowerPoint:
+  enquanto a altura não é ajustada à mão, ela cresce com o texto; ao arrastar a
+  borda de cima ou de baixo, a caixa passa a mandar e o texto diminui sozinho
+  até caber. O interruptor fica em "Opções de anotação".
 - Anotações adicionais importadas da nova interface: linha de chamada, cota
   livre e cota de ângulo, todas com rótulo editável direto na área da imagem.
-- Balão numerado com opções avançadas de preenchimento e linha de chamada.
+- Balão numerado e triângulo de revisão com preenchimento independente, sem
+  tamanho mínimo fixo e redimensionáveis por qualquer uma das oito alças.
+- O número do balão e da revisão avança sozinho em números, letras e prefixos:
+  1, 2, 3 / A, B, C / R1, R2 / Rev A, Rev B.
 - Duplo clique com a ferramenta Mover edita textos já inseridos em texto,
   cotas, chamadas e balões.
 - Setas usam ponta fechada/preenchida; cotas livres usam extremidades
   perpendiculares e travam suavemente quando próximas de horizontal/vertical.
+- Cota livre e cota de ângulo têm alças nas pontas: comprimento e ângulo mudam
+  depois de desenhados. O afastamento das linhas de chamada da cota tem alça
+  própria.
+- Nuvem de revisão com menu próprio na setinha ao lado da ferramenta: traço
+  retangular ou à mão livre e raio do festonado. À mão livre, o traço vira nuvem
+  e fecha sozinho quando termina perto de onde começou.
+- O texto da linha de chamada fica numa caixa como a da ferramenta Texto: a
+  frase quebra em linhas, arrastar a borda reflui o texto e fixar a altura
+  reduz a fonte até caber.
+- O campo de tamanho da faixa muda de nome conforme a ferramenta - Fonte,
+  Balão, Triângulo, Ponta (da seta) ou Raio (da nuvem) - e cada ferramenta
+  guarda o seu próprio valor.
+- Caneta e marca-texto sem serrilhado na borda: a camada de desenho é
+  rasterizada acima da resolução da tela e os pontos passam por uma suavização
+  antes de virar curva, no desenho, na cópia e na exportação.
 - Seta, retângulo, círculo sempre proporcional, linha direta, balão numerado,
   desfoque, caneta, marca-texto, linha ortogonal por cliques e nuvem de revisão.
 - Linha ortogonal contínua: clique para iniciar, clique para continuar em
   vertical/horizontal e finalize com ESC, botão direito ou "Interromper".
 - Movimento e redimensionamento das marcações.
 - Ctrl+scroll e botões de zoom atuam apenas na imagem, sem ampliar/reduzir a
-  interface do programa.
+  interface do programa. As alças de seleção mantêm o mesmo tamanho aparente em
+  qualquer zoom.
+- A faixa de opções cabe inteira na largura mínima da janela: nenhuma guia
+  depende de barra de rolagem horizontal.
 - Zoom visual sem reduzir a resolução original da imagem/exportação.
 - Atraso de captura, cópia automática e salvamento automático.
 - Cadastro de usuário, pastas configuráveis e preferências persistentes.
@@ -131,8 +155,7 @@ algumas operações do canvas custam caro. Duas foram reescritas por causa disso
 ------------------------
 O arquivo "super_captura.ico" é desenhado tamanho a tamanho (16, 20, 24, 32,
 40, 48, 64, 96, 128 e 256 pixels), com as barras alinhadas ao pixel, para não
-aparecer borrado no Menu Iniciar. A versão anterior está guardada em
-"super_captura_backup_rev6.ico" e pode ser apagada.
+aparecer borrado no Menu Iniciar.
 
 O programa também declara sua identidade no Windows (AppUserModelID), o que faz
 a barra de tarefas mostrar o ícone do Super Captura em vez do ícone do Python
