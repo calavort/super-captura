@@ -44,6 +44,9 @@ const strokeResizeTools = new Set(["Caneta", "MarcaTexto"]);
 // A cota livre e a cota de angulo tambem ganham alcas nas pontas: depois de
 // desenhadas da para mudar comprimento e angulo sem refazer a marcacao.
 const lineResizeTools = new Set(["Linha", "Seta", "Chamada", "CotaLivre", "CotaAngulo"]);
+// Quem se beneficia de ficar exatamente na horizontal ou na vertical. A cota é
+// o caso que mais pede: uma medida tem que sair reta, e na mão nunca sai.
+const axisSnapTools = new Set(["Linha", "Seta", "Chamada", "CotaLivre"]);
 // Balao e triangulo de revisao: qualquer uma das oito alcas escala a marcacao
 // inteira a partir do centro.
 const markerResizeTools = new Set(["Balao", "Revisao"]);
@@ -56,6 +59,9 @@ const STROKE_MIN_DISTANCE = 1.8;
 const RENDER_OVERSAMPLE = 2;
 // Nuvem de revisao desenhada a mao livre, em vez de retangular.
 let cloudFreeMode = false;
+// Balão e triângulo avançam o número sozinhos a cada marcação. Desligado pelo
+// menu da própria ferramenta, o valor digitado fica fixo e repete.
+let autoSequence = {Balao: true, Revisao: true};
 let workspaceMode = "home";
 let homeBgImage = null;
 let homeAnnotations = annotations;
@@ -239,6 +245,10 @@ function applySettings(settings) {
     setInputValue("cfg-fonte", toolSizes.Texto);
     setInputValue("cfg-numero", appSettings.number ?? 1);
     cloudFreeMode = Boolean(appSettings.cloud_free);
+    const savedSequence = appSettings.auto_sequence;
+    if (savedSequence && typeof savedSequence === "object") {
+        autoSequence = {Balao: savedSequence.Balao !== false, Revisao: savedSequence.Revisao !== false};
+    }
     if (byId("cfg-balao-fill")) byId("cfg-balao-fill").checked = appSettings.balloon_fill !== false;
     if (byId("cfg-balao-line")) byId("cfg-balao-line").checked = Boolean(appSettings.balloon_line);
     if (byId("cfg-revisao-fill")) byId("cfg-revisao-fill").checked = Boolean(appSettings.review_fill);
@@ -275,6 +285,7 @@ function readPreferences() {
         tool_sizes: {...toolSizes},
         number: String(byId("cfg-numero").value || "1"),
         cloud_free: cloudFreeMode,
+        auto_sequence: {...autoSequence},
         balloon_fill: byId("cfg-balao-fill") ? byId("cfg-balao-fill").checked : true,
         balloon_line: byId("cfg-balao-line") ? byId("cfg-balao-line").checked : false,
         review_fill: byId("cfg-revisao-fill") ? byId("cfg-revisao-fill").checked : false,
@@ -1211,6 +1222,8 @@ function initializeDrawingPickers() {
         };
     });
 
+    buildToolConfigMenus();
+
     document.addEventListener("mousedown", event => {
         if (activeFormatPopover && !activeFormatPopover.contains(event.target) && !formatPopoverAnchor.contains(event.target)) closeFormatPopover();
     });
@@ -1299,6 +1312,169 @@ function applyCloudFreeMode(livre) {
         }
     }
     persistPreferences();
+}
+
+// ---------------------------------------------------------------------------
+// Menu de opções por ferramenta
+//
+// Cada ferramenta com tamanho próprio ganha uma setinha ao lado do botão, no
+// mesmo lugar em que a caneta, o marca-texto e a nuvem já tinham a delas. O
+// menu reúne junto da ferramenta o que antes ficava solto na faixa — tamanho,
+// preenchimento, número — e vale tanto para a próxima marcação quanto para a
+// que estiver selecionada.
+// ---------------------------------------------------------------------------
+
+// O que cada menu mostra. "fill" e "text" só aparecem em quem tem essas opções.
+const toolConfigMenus = {
+    Seta: {title: "Seta", size: true},
+    Chamada: {title: "Linha de chamada", size: true},
+    CotaLivre: {title: "Cota livre", size: true},
+    CotaAngulo: {title: "Cota de ângulo", size: true},
+    Texto: {title: "Texto", size: true},
+    Balao: {title: "Balão numerado", size: true, fill: "balao", text: "Balao"},
+    Revisao: {title: "Triângulo de revisão", size: true, fill: "revisao", text: "Revisao"}
+};
+
+function buildToolConfigMenus() {
+    const popover = document.createElement("section");
+    popover.id = "tool-config-popover";
+    popover.className = "format-popover";
+    popover.hidden = true;
+    popover.setAttribute("role", "dialog");
+    document.body.append(popover);
+
+    Object.keys(toolConfigMenus).forEach(tool => {
+        document.querySelectorAll('.tool-btn[data-tool="' + tool + '"]').forEach(toolButton => {
+            const wrapper = document.createElement("div");
+            wrapper.className = "stroke-tool";
+            toolButton.before(wrapper);
+            wrapper.append(toolButton);
+            const trigger = document.createElement("button");
+            trigger.className = "stroke-menu-trigger";
+            trigger.textContent = "\u2304";
+            trigger.title = "Opções: " + toolConfigMenus[tool].title;
+            trigger.setAttribute("aria-label", trigger.title);
+            trigger.setAttribute("aria-expanded", "false");
+            wrapper.append(trigger);
+            trigger.onclick = () => {
+                if (activeFormatPopover === popover && formatPopoverAnchor === trigger) return closeFormatPopover();
+                // Abrir o menu já escolhe a ferramenta, a não ser que a marcação
+                // selecionada seja dela — aí o menu edita o que está selecionado.
+                if (annotations[selectedIndex]?.type !== tool) { finishActiveCommand(true); selectTool(tool); }
+                renderToolConfigMenu(popover, tool);
+                openFormatPopover(popover, trigger);
+            };
+        });
+    });
+}
+
+// O tamanho vem da marcação selecionada quando há uma; senão, do padrão da
+// ferramenta. É o mesmo valor do campo da faixa, só que ao lado do botão.
+function toolConfigSize(tool) {
+    const selecionada = annotations[selectedIndex];
+    if (selecionada && selecionada.type === tool && Number(selecionada.font) > 0) return Number(selecionada.font);
+    return toolSizes[tool] ?? 20;
+}
+
+function applyToolConfigSize(tool, valor) {
+    byId("cfg-fonte").value = clampToolSize(tool, valor);
+    handleFormatControlChanged();
+}
+
+function toolConfigFilled(tool) {
+    const selecionada = annotations[selectedIndex];
+    if (tool === "Balao") {
+        if (selecionada && selecionada.type === "Balao") return selecionada.fillBalloon !== false;
+        return byId("cfg-balao-fill") ? byId("cfg-balao-fill").checked : true;
+    }
+    if (selecionada && selecionada.type === "Revisao") return selecionada.fillReview === true;
+    return byId("cfg-revisao-fill") ? byId("cfg-revisao-fill").checked : false;
+}
+
+function toolConfigNextHint(chave, atual) {
+    return autoSequence[chave] !== false
+        ? "Próximo: " + atual + " · depois " + nextSequenceText(atual)
+        : "Fixo em " + atual + ": não avança sozinho.";
+}
+
+function renderToolConfigMenu(popover, tool) {
+    const config = toolConfigMenus[tool];
+    const rotulo = sizeLabels[tool] || "Tamanho";
+    popover.setAttribute("aria-label", config.title);
+
+    let html = '<div class="picker-heading">' + config.title
+        + '<button class="picker-close" aria-label="Fechar">&times;</button></div>';
+    if (config.size) {
+        html += '<span class="picker-label">' + rotulo + '</span>'
+            + '<div class="config-size-row">'
+            + '<input class="config-size" type="number" min="8" max="200" step="1" value="'
+            + toolConfigSize(tool) + '" aria-label="' + rotulo + '">'
+            + '<span class="config-stepper">'
+            + '<button type="button" data-step="1" tabindex="-1" aria-label="Aumentar">&#9650;</button>'
+            + '<button type="button" data-step="-1" tabindex="-1" aria-label="Diminuir">&#9660;</button>'
+            + '</span><span class="config-hint">8 a 200</span></div>';
+    }
+    if (config.fill) {
+        const cheio = toolConfigFilled(tool);
+        html += '<span class="picker-label">Preenchimento</span>'
+            + '<div class="option-choices" role="group" aria-label="Preenchimento">'
+            + '<button class="option-choice" data-fill="solid" aria-pressed="' + cheio + '">'
+            + '<span class="config-shape ' + config.fill + ' solid"></span><span>Sólido</span></button>'
+            + '<button class="option-choice" data-fill="outline" aria-pressed="' + (!cheio) + '">'
+            + '<span class="config-shape ' + config.fill + ' outline"></span><span>Vazado</span></button></div>';
+    }
+    if (config.text) {
+        const atual = String(byId("cfg-numero").value || "1");
+        html += '<span class="picker-label">Texto</span>'
+            + '<input class="config-text-input" type="text" maxlength="12" value="'
+            + atual.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;")
+            + '" placeholder="1, A, R1..." aria-label="Texto da marcação" autocomplete="off">'
+            + '<label class="config-check"><input type="checkbox" class="config-seq"'
+            + (autoSequence[config.text] !== false ? " checked" : "") + ">"
+            + "<span>Sequência automática</span></label>"
+            + '<div class="config-hint config-next">' + toolConfigNextHint(config.text, atual) + "</div>";
+    }
+    popover.innerHTML = html;
+    popover.querySelector(".picker-close").onclick = () => closeFormatPopover(true);
+
+    const campoTamanho = popover.querySelector(".config-size");
+    if (campoTamanho) {
+        campoTamanho.oninput = () => applyToolConfigSize(tool, campoTamanho.value);
+        popover.querySelectorAll(".config-stepper button").forEach(passo => {
+            passo.onclick = () => {
+                const valor = clampToolSize(tool, Number(campoTamanho.value) + Number(passo.dataset.step));
+                campoTamanho.value = valor;
+                applyToolConfigSize(tool, valor);
+            };
+        });
+    }
+    popover.querySelectorAll("[data-fill]").forEach(escolha => {
+        escolha.onclick = () => {
+            const alvo = byId(tool === "Balao" ? "cfg-balao-fill" : "cfg-revisao-fill");
+            if (alvo) alvo.checked = escolha.dataset.fill === "solid";
+            handleFormatControlChanged();
+            renderToolConfigMenu(popover, tool);
+            positionFormatPopover();
+        };
+    });
+    const campoTexto = popover.querySelector(".config-text-input");
+    if (campoTexto) {
+        campoTexto.oninput = () => {
+            byId("cfg-numero").value = campoTexto.value;
+            handleFormatControlChanged();
+            const dica = popover.querySelector(".config-next");
+            if (dica) dica.textContent = toolConfigNextHint(config.text, campoTexto.value || "1");
+        };
+    }
+    const interruptor = popover.querySelector(".config-seq");
+    if (interruptor) {
+        interruptor.onchange = () => {
+            autoSequence[config.text] = interruptor.checked;
+            persistPreferences();
+            renderToolConfigMenu(popover, tool);
+            positionFormatPopover();
+        };
+    }
 }
 
 function appendStrokePoint(point, final = false) {
@@ -1618,6 +1794,22 @@ function finalizeTextEditor(commit = true, switchToMover = true) {
     redraw();
 }
 
+// Perto da horizontal ou da vertical, o traço encaixa nela. A tolerância cresce
+// com o comprimento (8% dele, entre 6 e 24 px do documento): num traço curto o
+// encaixe não atrapalha a mira, e num longo ele ainda pega. Passar da tolerância
+// devolve o ângulo livre — não é uma trava, é um ímã fraco.
+function applyAxisSnap(tool, origin, point) {
+    if (!axisSnapTools.has(tool) || !origin || !point) return point;
+    const dx = point.x - origin.x;
+    const dy = point.y - origin.y;
+    const comprimento = Math.hypot(dx, dy);
+    if (comprimento < 8) return point;
+    const tolerancia = Math.max(6, Math.min(24, comprimento * 0.08));
+    if (Math.abs(dy) <= tolerancia) return {x: point.x, y: origin.y};
+    if (Math.abs(dx) <= tolerancia) return {x: origin.x, y: point.y};
+    return point;
+}
+
 function snapOrthogonalPoint(origin, point) {
     const dx = point.x - origin.x;
     const dy = point.y - origin.y;
@@ -1707,18 +1899,6 @@ function getMousePos(event) {
     };
 }
 
-function applyDimensionMagnet(tool, start, point) {
-    if (tool !== "CotaLivre" || !start) return point;
-    const dx = point.x - start.x;
-    const dy = point.y - start.y;
-    const length = Math.hypot(dx, dy);
-    if (length < 8) return point;
-    const tolerance = Math.max(6, Math.min(24, length * 0.08));
-    if (Math.abs(dy) <= tolerance) return {x: point.x, y: start.y};
-    if (Math.abs(dx) <= tolerance) return {x: start.x, y: point.y};
-    return point;
-}
-
 document.addEventListener("mousedown", event => {
     if (!activeTextEditor) return;
     if (activeTextEditor.editor.contains(event.target)) return;
@@ -1796,7 +1976,7 @@ canvas.addEventListener("mousedown", event => {
         pushHistory();
         annotations.push({type: "Revisao", x: point.x, y: point.y, text: String(numberInput.value || "R"), ...options});
         selectedIndex = annotations.length - 1;
-        numberInput.value = nextSequenceText(numberInput.value || "R");
+        if (autoSequence.Revisao) numberInput.value = nextSequenceText(numberInput.value || "R");
         persistPreferences();
         redraw();
         scheduleClipboardSync();
@@ -1814,7 +1994,7 @@ canvas.addEventListener("mousedown", event => {
             const numberInput = byId("cfg-numero");
             pushHistory();
             annotations.push({type: "Balao", x: point.x, y: point.y, w: 0, h: 0, text: String(numberInput.value), ...options});
-            numberInput.value = nextSequenceText(numberInput.value || "1");
+            if (autoSequence.Balao) numberInput.value = nextSequenceText(numberInput.value || "1");
             persistPreferences();
             redraw();
             scheduleClipboardSync();
@@ -1909,7 +2089,7 @@ canvas.addEventListener("pointermove", event => {
     }
 
     if (!startPoint) return;
-    point = applyDimensionMagnet(currentTool, startPoint, point);
+    point = applyAxisSnap(currentTool, startPoint, point);
     if (strokeResizeTools.has(currentTool) || drawingFreeCloud()) {
         const samples = event.getCoalescedEvents?.() || [];
         for (const sample of samples) appendStrokePoint(getMousePos(sample));
@@ -1936,7 +2116,7 @@ function finishDrawing(event) {
         return;
     }
     if (event && startPoint) {
-        const point = applyDimensionMagnet(currentTool, startPoint, getMousePos(event));
+        const point = applyAxisSnap(currentTool, startPoint, getMousePos(event));
         if (strokeResizeTools.has(currentTool) || drawingFreeCloud()) appendStrokePoint(point, true);
         preview = createShape(currentTool, startPoint, point, getOptions());
     }
@@ -1958,7 +2138,7 @@ function finishDrawing(event) {
             pushHistory();
             annotations.push(preview);
             selectedIndex = annotations.length - 1;
-            numberInput.value = nextSequenceText(numberInput.value || "1");
+            if (autoSequence.Balao) numberInput.value = nextSequenceText(numberInput.value || "1");
             persistPreferences();
             committed = true;
         } else if (labelTools.has(currentTool)) {
@@ -3296,6 +3476,10 @@ function resizeCircleCorner(shape, corner, point) {
 }
 
 function resizeLineShape(shape, corner, point) {
+    // A outra ponta é o ponto fixo: é dela que sai a horizontal e a vertical.
+    point = corner === "start"
+        ? applyAxisSnap(shape.type, {x: shape.x + (shape.w || 0), y: shape.y + (shape.h || 0)}, point)
+        : applyAxisSnap(shape.type, {x: shape.x, y: shape.y}, point);
     if (corner === "start") {
         const endX = shape.x + shape.w;
         const endY = shape.y + shape.h;

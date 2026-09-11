@@ -617,6 +617,24 @@
         .option-choice[aria-pressed="true"] { background:#e8f3ed; border-color:#107c41; color:#107c41; }
         .option-choice:hover { background:#f1f6f3; }
         .stroke-choice[data-marker="true"] .stroke-sample { opacity:.38; }
+        /* Menus de configuracao por ferramenta (tamanho, preenchimento, texto). */
+        .config-size-row { display:flex; align-items:center; gap:8px; }
+        .config-size-row input { width:62px; padding:6px 8px; border:1px solid #d9d9d9; background:#fff; color:#242424; font:13px 'Segoe UI'; }
+        .config-stepper { display:flex; flex-direction:column; }
+        .config-stepper button { width:18px; height:13px; padding:0; border:1px solid #d9d9d9; background:#fff; color:#616161; cursor:pointer; font:9px/1 'Segoe UI'; }
+        .config-stepper button:first-child { border-radius:3px 3px 0 0 !important; }
+        .config-stepper button:last-child { border-top:0; border-radius:0 0 3px 3px !important; }
+        .config-stepper button:hover { background:#f0f7f3; border-color:#a3cbb5; }
+        .config-hint { color:#8a8886; font-size:11px; }
+        .config-text-input { width:100%; box-sizing:border-box; padding:6px 8px; border:1px solid #d9d9d9; background:#fff; color:#242424; font:13px 'Segoe UI'; }
+        .config-check { display:flex; align-items:center; gap:6px; margin-top:10px; color:#424242; cursor:pointer; }
+        .config-check input { margin:0; accent-color:#107c41; }
+        .config-shape { width:22px; height:22px; }
+        .config-shape.balao { border:2px solid var(--drawing-color,#107c41); border-radius:50%; }
+        .config-shape.balao.solid { background:var(--drawing-color,#107c41); }
+        .config-shape.revisao { clip-path:polygon(50% 6%, 96% 94%, 4% 94%); border:0; background:var(--drawing-color,#107c41); }
+        .config-shape.revisao.outline { background:linear-gradient(var(--drawing-color,#107c41),var(--drawing-color,#107c41)) padding-box; position:relative; }
+        .config-shape.revisao.outline::after { content:""; position:absolute; inset:3px; clip-path:polygon(50% 6%, 96% 94%, 4% 94%); background:#fff; }
         .format-popover { border-radius:10px !important; }
         .format-popover [hidden] { display:none !important; }
         .format-popover button,.format-popover input,.color-trigger { border-radius:4px !important; }
@@ -624,6 +642,9 @@
         .format-popover .color-spectrum { border-radius:5px !important; }
         .format-popover .spectrum-thumb { border-radius:50% !important; }
         .format-popover .stroke-sample { border-radius:20px !important; }
+        .format-popover .config-shape.balao { border-radius:50% !important; }
+        .format-popover .config-stepper button:first-child { border-radius:3px 3px 0 0 !important; }
+        .format-popover .config-stepper button:last-child { border-radius:0 0 3px 3px !important; }
     </style>
 </head>
 <body onload="initializeGreeting()">

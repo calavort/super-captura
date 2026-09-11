@@ -98,7 +98,7 @@ def main():
         check("byId('drawing-color-popover').hidden")
         print("OK: theme, standard, custom colors, validation, recent colors, Escape")
 
-        js("document.querySelector('.stroke-menu-trigger').click()")
+        js("""document.querySelector('.tool-btn[data-tool="Caneta"] + .stroke-menu-trigger').click()""")
         check("currentTool === 'Caneta' && !byId('stroke-width-popover').hidden")
         js("document.querySelector('.stroke-choice[aria-label=\"6 pixels\"]').click()")
         check("getOptions().thick === 6")
@@ -115,7 +115,8 @@ def main():
         check("annotations[0].points.every(p => Number.isFinite(p.x) && Number.isFinite(p.y))")
         print("OK: real Qt mouse stroke, smooth drawing points and width")
 
-        js("selectTool('MarcaTexto'); document.querySelectorAll('.stroke-menu-trigger')[1].click()")
+        js("""selectTool('MarcaTexto');
+            document.querySelector('.tool-btn[data-tool="MarcaTexto"] + .stroke-menu-trigger').click()""")
         screenshot("validacao-espessura.png")
         js("document.querySelector('.stroke-choice[aria-label=\"24 pixels\"]').click(); selectTool('Caneta')")
         check("getOptions().thick === 6")
@@ -145,7 +146,13 @@ def main():
         js("document.querySelector('.ribbon-tab[onclick*=tab-edicao]').click()")
         check("workspaceMode === 'edition'")
         # Caneta, marca-texto e nuvem de revisao, nas duas guias.
-        check("document.querySelectorAll('.stroke-menu-trigger').length === 6")
+        # Cada ferramenta com tamanho proprio tem a sua setinha, nas duas guias.
+        check("""(() => {
+            const comMenu = ['Caneta','MarcaTexto','Nuvem', ...Object.keys(toolConfigMenus)];
+            return comMenu.every(t =>
+                document.querySelectorAll('.tool-btn[data-tool="' + t + '"]').length === 2 &&
+                document.querySelectorAll('.tool-btn[data-tool="' + t + '"] + .stroke-menu-trigger').length === 2);
+        })()""")
         js("document.querySelectorAll('[data-color-picker]')[1].click()")
         check("!byId('drawing-color-popover').hidden")
         # A primeira largura e o tamanho minimo da janela, onde a faixa ja cabe inteira.
