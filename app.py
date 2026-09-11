@@ -46,7 +46,7 @@ APP_REV = "Rev.7"
 # Python (o processo real e o pythonw.exe) em vez do icone do Super Captura.
 APP_USER_MODEL_ID = "Calavort.SuperCaptura"
 BASE_DIR = Path(__file__).resolve().parent
-HTML_PATH = BASE_DIR / "NOVA INTERFACE INTERFACE - SUPER CAPRURA.html"
+HTML_PATH = BASE_DIR / "interface-super-captura.html"
 SETTINGS_PATH = BASE_DIR / "configuracoes.json"
 ICON_PATH = BASE_DIR / "super_captura.ico"
 DEFAULT_IMAGE_DIR = BASE_DIR / "capturas"

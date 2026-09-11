@@ -29,7 +29,7 @@ MAX_EXPANDED = 160 * 1024 * 1024
 # An explicit list prevents personal data from being shipped or overwritten.
 APP_FILES = (
     "app.py", "atualizador.py", "atualizador_ui.py", "versao.json",
-    "NOVA INTERFACE INTERFACE - SUPER CAPRURA.html",
+    "interface-super-captura.html",
     "interface/nova-interface.js", "interface/fonts/material-symbols-outlined.ttf",
     "super_captura.ico", "requirements.txt", "README.txt", "ATUALIZACOES.md",
     "iniciar_super_captura.bat", "Instalar Bibliotecas.bat",

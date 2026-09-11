@@ -27,7 +27,7 @@ def main():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / name, target)
     capture.BASE_DIR = folder
-    capture.HTML_PATH = folder / "NOVA INTERFACE INTERFACE - SUPER CAPRURA.html"
+    capture.HTML_PATH = folder / "interface-super-captura.html"
     capture.SETTINGS_PATH = folder / "configuracoes.json"
     capture.DEFAULT_IMAGE_DIR = folder / "capturas"
     capture.DEFAULT_VIDEO_DIR = folder / "videos"
