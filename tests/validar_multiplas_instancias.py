@@ -10,7 +10,7 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
-from atualizador import APP_FILES, InstanceLock, running_instances, write_json
+from atualizacao.atualizador import APP_FILES, InstanceLock, running_instances, write_json
 
 VALIDATE = r"""
 const {chromium} = require('playwright');

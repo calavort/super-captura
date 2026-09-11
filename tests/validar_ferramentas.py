@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT))
 
 import app as capture
 import atualizador_ui
-from atualizador import APP_FILES
+from atualizacao.atualizador import APP_FILES
 from PySide6.QtCore import QPoint, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -34,7 +34,7 @@ def main():
         target.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / name, target)
     capture.BASE_DIR = folder
-    capture.HTML_PATH = folder / "interface-super-captura.html"
+    capture.HTML_PATH = folder / "interface" / "interface-super-captura.html"
     capture.SETTINGS_PATH = folder / "configuracoes.json"
     capture.DEFAULT_IMAGE_DIR = folder / "capturas"
     capture.DEFAULT_VIDEO_DIR = folder / "videos"

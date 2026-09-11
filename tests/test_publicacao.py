@@ -11,7 +11,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "ferramentas"))
 
 import publicar_release as publisher
-from atualizador import APP_ID, UpdateError, sha256, write_json
+from atualizacao.atualizador import APP_ID, UpdateError, sha256, write_json
 
 
 class PublicationTests(unittest.TestCase):

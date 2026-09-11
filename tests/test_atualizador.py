@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "ferramentas"))
 
-import atualizador as updater
+from atualizacao import atualizador as updater
 from publicar_release import build_package
 
 
@@ -159,7 +159,7 @@ class UpdateTests(unittest.TestCase):
         replace = os.replace
 
         def fail_one(source, destination):
-            if Path(destination) == self.target / "atualizador_ui.py":
+            if Path(destination) == self.target / "atualizacao" / "atualizador_ui.py":
                 raise PermissionError("arquivo bloqueado")
             return replace(source, destination)
 
@@ -200,7 +200,7 @@ class UpdateTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == "win32", "Windows process locking")
     def test_crashed_app_does_not_leave_a_false_live_instance(self):
         script = (
-            "import sys; from pathlib import Path; from atualizador import AppInstance; "
+            "import sys; from pathlib import Path; from atualizacao.atualizador import AppInstance; "
             "instance=AppInstance(Path(sys.argv[1])); assert instance.acquire(); "
             "print('ready',flush=True); sys.stdin.read()"
         )
@@ -235,7 +235,9 @@ class UpdateTests(unittest.TestCase):
         state = updater.state_path(self.target)
         local_archive = state / "download-teste.zip"
         shutil.copy2(archive, local_archive)
-        shutil.copy2(ROOT / "atualizador.py", self.target / "atualizador.py")
+        destino_ajudante = self.target / "atualizacao" / "atualizador.py"
+        destino_ajudante.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / "atualizacao" / "atualizador.py", destino_ajudante)
         release = updater.Release("7.1.1", "calavort/super-captura", "", updater.sha256(local_archive), local_archive.stat().st_size)
         lock = updater.AppInstance(self.target)
         self.assertTrue(lock.acquire())

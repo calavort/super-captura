@@ -15,7 +15,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from atualizador import (APP_FILES, InstanceLock, check_release, download_release, prepare_installer,
+from atualizacao.atualizador import (APP_FILES, InstanceLock, check_release, download_release, prepare_installer,
                          read_version, sha256, start_installer, state_path, write_json)
 from PySide6.QtCore import QBuffer, QByteArray, QIODevice
 from PySide6.QtGui import QColor, QImage

@@ -16,7 +16,7 @@ INSTALAÇÃO
 RECURSOS
 --------
 - Atualizacoes por GitHub Releases: verificacao ao abrir e instalacao com
-  confirmacao. Consulte ATUALIZACOES.md para instalar e publicar versoes.
+  confirmacao. Consulte notas-de-versao/ATUALIZACOES.md para instalar e publicar versoes.
 - Captura de uma área ou da tela inteira.
 - Captura otimizada para uso prático: menor espera para esconder a janela,
   exibição imediata sempre que possível e uso de arquivo temporário apenas
@@ -138,6 +138,18 @@ Duas coisas foram testadas e descartadas por não melhorarem nada: desenhar em
 resultado medido foi igual ou pior - e a reamostragem "high", que custa caro
 sem ganho visível aqui.
 
+ORGANIZACAO DA PASTA
+--------------------
+app.py                 o programa; os atalhos do Menu Iniciar apontam para ele
+atualizacao/           verificacao, download e instalacao das versoes
+interface/             pagina, script, fontes e icone
+notas-de-versao/       ATUALIZACOES.md e as notas de cada versao
+ferramentas/           publicar_release.py, usado so para publicar
+tests/                 testes
+capturas/ e videos/    o que o programa salva
+versao.json            versao instalada e onde fica o programa
+configuracoes.json     suas preferencias
+
 DESEMPENHO
 ----------
 A janela do programa compõe tudo por software (sem aceleração de vídeo), então
@@ -153,7 +165,7 @@ algumas operações do canvas custam caro. Duas foram reescritas por causa disso
 
 ÍCONE E BARRA DE TAREFAS
 ------------------------
-O arquivo "super_captura.ico" é desenhado tamanho a tamanho (16, 20, 24, 32,
+O arquivo "interface/super_captura.ico" é desenhado tamanho a tamanho (16, 20, 24, 32,
 40, 48, 64, 96, 128 e 256 pixels), com as barras alinhadas ao pixel, para não
 aparecer borrado no Menu Iniciar.
 

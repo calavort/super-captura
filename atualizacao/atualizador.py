@@ -35,16 +35,20 @@ _RESERVED_NAMES = frozenset(
     | {f"COM{n}" for n in range(1, 10)}
     | {f"LPT{n}" for n in range(1, 10)}
 )
-_SEGMENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]*")
+# Sublinhado no inicio e valido (__init__.py); ponto no inicio nao, para
+# nao deixar passar arquivo oculto nem "." / "..".
+_SEGMENT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9 ._-]*")
 # Lista desta versao: e o que o publicador empacota e o que se assume ter
 # sido instalado quando ainda nao existe registro de uma instalacao anterior.
 APP_FILES = (
-    "app.py", "atualizador.py", "atualizador_ui.py", "versao.json",
-    "interface-super-captura.html",
-    "interface/nova-interface.js", "interface/fonts/material-symbols-outlined.ttf",
-    "super_captura.ico", "requirements.txt", "README.txt", "ATUALIZACOES.md",
+    "app.py", "versao.json", "requirements.txt", "README.txt",
     "iniciar_super_captura.bat", "Instalar Bibliotecas.bat",
     "Adicionar ao Menu Iniciar.bat",
+    "atualizacao/atualizador.py", "atualizacao/atualizador_ui.py",
+    "interface/interface-super-captura.html", "interface/nova-interface.js",
+    "interface/super_captura.ico",
+    "interface/fonts/material-symbols-outlined.ttf",
+    "notas-de-versao/ATUALIZACOES.md",
 )
 
 

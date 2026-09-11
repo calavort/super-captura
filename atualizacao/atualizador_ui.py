@@ -10,8 +10,8 @@ from pathlib import Path
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from PySide6.QtWidgets import QMessageBox
 
-from atualizador import (UpdateError, check_release, download_release, prepare_installer,
-                         read_version, start_installer, state_path, unpack_package, write_json)
+from .atualizador import (UpdateError, check_release, download_release, prepare_installer,
+                          read_version, start_installer, state_path, unpack_package, write_json)
 
 
 class UpdateController(QObject):

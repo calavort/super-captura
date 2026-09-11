@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-from atualizador import AppInstance, read_version, write_json
+from atualizacao.atualizador import AppInstance, read_version, write_json
 
 os.environ.setdefault(
     "QTWEBENGINE_CHROMIUM_FLAGS",
@@ -37,7 +37,7 @@ from PySide6.QtWebEngineCore import QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QRubberBand, QWidget
 
-from atualizador_ui import UpdateController
+from atualizacao.atualizador_ui import UpdateController
 
 
 APP_NAME = "Super Captura"
@@ -46,9 +46,9 @@ APP_REV = "Rev.7"
 # Python (o processo real e o pythonw.exe) em vez do icone do Super Captura.
 APP_USER_MODEL_ID = "Calavort.SuperCaptura"
 BASE_DIR = Path(__file__).resolve().parent
-HTML_PATH = BASE_DIR / "interface-super-captura.html"
+HTML_PATH = BASE_DIR / "interface" / "interface-super-captura.html"
 SETTINGS_PATH = BASE_DIR / "configuracoes.json"
-ICON_PATH = BASE_DIR / "super_captura.ico"
+ICON_PATH = BASE_DIR / "interface" / "super_captura.ico"
 DEFAULT_IMAGE_DIR = BASE_DIR / "capturas"
 DEFAULT_VIDEO_DIR = BASE_DIR / "videos"
 # Largura em que a faixa de opcoes cabe inteira, na guia mais larga (Configuracao).
