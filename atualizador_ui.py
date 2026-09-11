@@ -165,6 +165,9 @@ class UpdateController(QObject):
                 self.acknowledge_session()
             except OSError:
                 pass
+        instance = getattr(self.window, "app_instance", None)
+        if instance:
+            instance.cancel_update()
         self.busy = False
         self.installing = False
         self.window.setEnabled(True)
@@ -183,7 +186,7 @@ class UpdateController(QObject):
         self.dialog = QMessageBox(self.window)
         self.dialog.setWindowTitle("Instalar atualizacao")
         self.dialog.setText(f"Instalar a versao {self.release.version} e reiniciar?")
-        self.dialog.setInformativeText("As imagens e anotacoes abertas serao recuperadas ao reiniciar.")
+        self.dialog.setInformativeText("Feche as outras janelas do Super Captura antes de instalar. As imagens e anotacoes desta janela serao recuperadas ao reiniciar.")
         install = self.dialog.addButton("Instalar e reiniciar", QMessageBox.ButtonRole.AcceptRole)
         later = self.dialog.addButton("Mais tarde", QMessageBox.ButtonRole.RejectRole)
         self.dialog.setDefaultButton(later)
@@ -199,12 +202,19 @@ class UpdateController(QObject):
         self.dialog.open()
 
     def _begin_install(self):
+        if self.installing:
+            return
         if self._capture_active():
             self._status("Conclua a captura ou gravacao antes de instalar.")
             return
         # Development changes must be published, not replaced by an older build.
         if (self.root / ".git").exists():
             self._status("Pasta de desenvolvimento. Teste a instalacao na copia extraida do pacote ZIP.")
+            self.window.bridge._emit_status(self.message)
+            return
+        instance = getattr(self.window, "app_instance", None)
+        if instance and not instance.reserve_update():
+            self._status("Feche as outras janelas do Super Captura e tente instalar novamente.")
             self.window.bridge._emit_status(self.message)
             return
         self.installing = True

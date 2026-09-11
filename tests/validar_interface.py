@@ -12,7 +12,7 @@ sys.path.insert(0, str(ROOT))
 
 import app as capture
 import atualizador_ui
-from atualizador import APP_FILES, Release, read_version, version_tuple
+from atualizador import APP_FILES, AppInstance, Release, read_version, version_tuple
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
@@ -101,6 +101,21 @@ def main():
         assert not window.updater.installing
         window.bridge.video_recording = False
         print("OK: instalacao bloqueada durante gravacao")
+
+        first = AppInstance(folder)
+        second = AppInstance(folder)
+        assert first.acquire() and second.acquire()
+        window.app_instance = first
+        try:
+            window.updater._begin_install()
+            assert not window.updater.installing and window.isEnabled()
+            assert "outras janelas" in window.updater.message
+            assert not (folder / ".atualizacoes" / "sessao.json").exists()
+        finally:
+            first.release()
+            second.release()
+            window.app_instance = None
+        print("OK: atualizacao pede fechar outras janelas sem encerrar trabalhos")
 
         # Synthetic images exercise preservation without touching the OS clipboard.
         javascript("""

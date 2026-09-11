@@ -15,7 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
-from atualizador import InstanceLock, read_version, recover_transaction
+from atualizador import AppInstance, read_version, write_json
 
 os.environ.setdefault(
     "QTWEBENGINE_CHROMIUM_FLAGS",
@@ -51,6 +51,10 @@ SETTINGS_PATH = BASE_DIR / "configuracoes.json"
 ICON_PATH = BASE_DIR / "super_captura.ico"
 DEFAULT_IMAGE_DIR = BASE_DIR / "capturas"
 DEFAULT_VIDEO_DIR = BASE_DIR / "videos"
+# Largura em que a faixa de opcoes cabe inteira, na guia mais larga (Configuracao).
+# Serve de largura minima da janela: assim nenhuma guia depende de rolagem
+# horizontal. tests/validar_interface.py confere esse valor no renderizador real.
+RIBBON_MIN_WIDTH = 1240
 CAPTURE_HIDE_DELAY_MS = 80
 CAPTURE_DELIVERY_DELAY_MS = 0
 DIRECT_PREVIEW_MAX_PIXELS = 10_000_000
@@ -112,6 +116,9 @@ def default_settings() -> dict:
         "number": 1,
         "balloon_fill": True,
         "balloon_line": False,
+        "review_fill": False,
+        "cloud_free": False,
+        "text_autogrow": True,
         "bold": False,
         "italic": False,
         "underline": False,
@@ -192,10 +199,7 @@ def load_settings() -> dict:
 
 
 def save_settings(settings: dict) -> None:
-    SETTINGS_PATH.write_text(
-        json.dumps(settings, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
+    write_json(SETTINGS_PATH, settings)
 
 
 class CaptureOverlay(QWidget):
@@ -723,6 +727,7 @@ class Bridge(QObject):
         allowed = {
             "delay", "auto_copy", "auto_save", "video_format", "video_fps", "video_audio",
             "color", "thickness", "font_size", "number", "balloon_fill", "balloon_line",
+            "review_fill", "cloud_free", "text_autogrow", "tool_sizes",
             "bold", "italic", "underline",
             "pen_thickness", "highlighter_thickness", "recent_colors",
         }
@@ -985,7 +990,10 @@ class MainWindow(QMainWindow):
         # Largura mínima suficiente para a faixa "Página Inicial" (a mais larga)
         # caber sem barra de rolagem horizontal (conteúdo mede ~1204px).
         self.resize(1240, 720)
-        self.setMinimumSize(1224, 600)
+        # A largura minima e a da faixa de opcoes completa (medida em
+        # tests/validar_interface.py): no tamanho minimo nenhuma guia precisa de
+        # barra de rolagem horizontal.
+        self.setMinimumSize(RIBBON_MIN_WIDTH, 600)
 
         self.web = SuperWebView(self)
         self.web.setStyleSheet("background: #E1DFDD;")
@@ -1199,24 +1207,24 @@ def main() -> None:
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("Edflávio Calavort")
     app.setDesktopFileName(APP_NAME)
-    lock = InstanceLock(BASE_DIR)
-    if not lock.acquire():
-        QMessageBox.information(None, APP_NAME, "O Super Captura ja esta aberto ou sendo atualizado nesta pasta.")
-        return
+    instance = AppInstance(BASE_DIR)
     try:
-        recover_transaction(BASE_DIR)
+        if not instance.acquire():
+            QMessageBox.information(None, APP_NAME, "Uma atualizacao esta em andamento. Aguarde a conclusao para abrir outra janela.")
+            return
     except Exception as exc:
         QMessageBox.critical(None, APP_NAME, f"Nao foi possivel recuperar a atualizacao: {exc}")
-        lock.release()
+        instance.release()
         return
     if ICON_PATH.exists():
         app.setWindowIcon(QIcon(str(ICON_PATH)))
-    window = MainWindow()
-    window.show()
     try:
+        window = MainWindow()
+        window.app_instance = instance
+        window.show()
         result = app.exec()
     finally:
-        lock.release()
+        instance.release()
     sys.exit(result)
 
 

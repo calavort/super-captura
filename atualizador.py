@@ -68,9 +68,12 @@ def sha256(path: Path) -> str:
 
 def write_json(path: Path, value: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".tmp")
-    temporary.write_text(json.dumps(value, ensure_ascii=True, indent=2), encoding="utf-8")
-    os.replace(temporary, path)
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex + ".tmp")
+    try:
+        temporary.write_text(json.dumps(value, ensure_ascii=True, indent=2), encoding="utf-8")
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def safe_target(root: Path, relative: str) -> Path:
@@ -96,15 +99,17 @@ def state_path(root: Path) -> Path:
     return target
 
 
-class InstanceLock:
-    """The app and installer share this lock so files are never replaced in use."""
+class _FileLock:
+    """OS-owned lock: closing/crashing the process releases it automatically."""
 
-    def __init__(self, root: Path):
-        self.path = state_path(root) / "instancia.lock"
+    def __init__(self, path: Path):
+        self.path = path
         self.stream = None
 
     def acquire(self, timeout: float = 0) -> bool:
         import msvcrt
+        if self.stream:
+            return True
         deadline = time.monotonic() + timeout
         stream = self.path.open("a+b")
         if not self.path.stat().st_size:
@@ -126,6 +131,85 @@ class InstanceLock:
         if self.stream:
             self.stream.close()
             self.stream = None
+
+
+def running_instances(root: Path, exclude: Path | None = None) -> int:
+    directory = state_path(root) / "instancias"
+    if not directory.exists():
+        return 0
+    count = 0
+    for path in directory.glob("*.lock"):
+        if path == exclude:
+            continue
+        probe = _FileLock(path)
+        try:
+            if probe.acquire():
+                probe.release()  # Stale file left by a terminated process.
+            else:
+                count += 1
+        except OSError:
+            if path.exists():
+                count += 1  # Do not install if a live lease cannot be inspected.
+    return count
+
+
+class InstanceLock(_FileLock):
+    """Exclusive installer lock: block new starts and wait for ALL live apps."""
+
+    def __init__(self, root: Path):
+        super().__init__(state_path(root) / "instancia.lock")
+        self.root = root
+
+    def acquire(self, timeout: float = 0) -> bool:
+        deadline = time.monotonic() + timeout
+        if not super().acquire(timeout):
+            return False
+        while running_instances(self.root):
+            if time.monotonic() >= deadline:
+                self.release()
+                return False
+            time.sleep(.1)
+        return True
+
+
+class AppInstance:
+    """One lease per open app, with a short gate for startup/update handoff."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.gate = _FileLock(state_path(root) / "instancia.lock")
+        directory = state_path(root) / "instancias"
+        directory.mkdir(exist_ok=True)
+        self.lease = _FileLock(directory / (uuid.uuid4().hex + ".lock"))
+
+    def acquire(self) -> bool:
+        if not self.gate.acquire(timeout=.5):
+            return False
+        try:
+            if (state_path(self.root) / "transacao.json").exists():
+                if running_instances(self.root):
+                    return False
+                recover_transaction(self.root)
+            return self.lease.acquire()
+        finally:
+            self.gate.release()
+
+    def reserve_update(self) -> bool:
+        if not self.lease.stream or not self.gate.acquire():
+            return False
+        if running_instances(self.root, exclude=self.lease.path):
+            self.gate.release()
+            return False
+        # Keep the gate until this window exits or installation is cancelled.
+        # No new app or second updater can race with session/plan serialization.
+        return True
+
+    def cancel_update(self):
+        self.gate.release()
+
+    def release(self):
+        self.lease.release()
+        self.gate.release()
 
 
 class _HttpsRedirect(urllib.request.HTTPRedirectHandler):

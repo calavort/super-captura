@@ -19,7 +19,16 @@ let isDrawing = false;
 let startPoint = null;
 let preview = null;
 let currentPoints = [];
+// Mesma lista, ja suavizada. E mantida ponto a ponto durante o traco: refazer a
+// suavizacao inteira a cada movimento do mouse deixava o risco cada vez mais
+// lento conforme ele crescia.
+let currentSmooth = [];
 const strokeWidths = {Caneta: 4, MarcaTexto: 16};
+// Cada ferramenta guarda o seu proprio tamanho, e o campo da faixa mostra o da
+// ferramenta ativa: fonte do texto e das cotas, diametro do balao, altura do
+// triangulo de revisao, ponta da seta e raio do festonado da nuvem.
+const toolSizes = {Texto: 28, Chamada: 24, CotaLivre: 22, CotaAngulo: 22, Seta: 22, Balao: 28, Revisao: 28, Nuvem: 9};
+const sizeLabels = {Texto: "Fonte", Chamada: "Fonte", CotaLivre: "Fonte", CotaAngulo: "Fonte", Seta: "Ponta", Balao: "Balão", Revisao: "Triângulo", Nuvem: "Raio"};
 let recentColors = [];
 let activeFormatPopover = null;
 let formatPopoverAnchor = null;
@@ -32,7 +41,21 @@ let orthogonalPath = null;
 const labelTools = new Set(["CotaLivre", "CotaAngulo", "Chamada"]);
 const boxResizeTools = new Set(["Retangulo", "Circulo", "Cobrir", "Nuvem", "Texto"]);
 const strokeResizeTools = new Set(["Caneta", "MarcaTexto"]);
-const lineResizeTools = new Set(["Linha", "Seta", "Chamada"]);
+// A cota livre e a cota de angulo tambem ganham alcas nas pontas: depois de
+// desenhadas da para mudar comprimento e angulo sem refazer a marcacao.
+const lineResizeTools = new Set(["Linha", "Seta", "Chamada", "CotaLivre", "CotaAngulo"]);
+// Balao e triangulo de revisao: qualquer uma das oito alcas escala a marcacao
+// inteira a partir do centro.
+const markerResizeTools = new Set(["Balao", "Revisao"]);
+const CLOUD_DEFAULT_RADIUS = 9;
+const DEFAULT_DIM_EXTENSION = 34;
+// Distancia minima entre pontos do traco a mao livre, antes da suavizacao.
+const STROKE_MIN_DISTANCE = 1.8;
+// O canvas e rasterizado acima da resolucao da tela e reduzido pelo navegador:
+// e isso que tira o serrilhado da borda do traco.
+const RENDER_OVERSAMPLE = 2;
+// Nuvem de revisao desenhada a mao livre, em vez de retangular.
+let cloudFreeMode = false;
 let workspaceMode = "home";
 let homeBgImage = null;
 let homeAnnotations = annotations;
@@ -58,7 +81,6 @@ let exportCtx = null;
 let bgProxyCanvas = null;
 let bgProxySource = null;
 let bgProxyWidth = 0;
-let dimensionGripState = null;
 let resizeCorner = null;
 // Histórico de desfazer/refazer (Ctrl+Z / Ctrl+Y).
 const HISTORY_LIMIT = 60;
@@ -209,10 +231,19 @@ function applySettings(settings) {
     strokeWidths.MarcaTexto = Math.max(4, Math.min(80, Number(appSettings.highlighter_thickness) || 16));
     recentColors = Array.isArray(appSettings.recent_colors)
         ? appSettings.recent_colors.filter(color => /^#[0-9a-f]{6}$/i.test(color)).slice(0, 10) : [];
-    setInputValue("cfg-fonte", appSettings.font_size || 28);
-    setInputValue("cfg-numero", appSettings.number || 1);
+    const savedSizes = appSettings.tool_sizes && typeof appSettings.tool_sizes === "object" ? appSettings.tool_sizes : {};
+    Object.keys(toolSizes).forEach(tool => {
+        if (savedSizes[tool] !== undefined) toolSizes[tool] = clampToolSize(tool, savedSizes[tool]);
+    });
+    if (appSettings.font_size) toolSizes.Texto = clampToolSize("Texto", appSettings.font_size);
+    setInputValue("cfg-fonte", toolSizes.Texto);
+    setInputValue("cfg-numero", appSettings.number ?? 1);
+    cloudFreeMode = Boolean(appSettings.cloud_free);
     if (byId("cfg-balao-fill")) byId("cfg-balao-fill").checked = appSettings.balloon_fill !== false;
     if (byId("cfg-balao-line")) byId("cfg-balao-line").checked = Boolean(appSettings.balloon_line);
+    if (byId("cfg-revisao-fill")) byId("cfg-revisao-fill").checked = Boolean(appSettings.review_fill);
+    if (byId("cfg-nuvem-livre")) byId("cfg-nuvem-livre").checked = cloudFreeMode;
+    if (byId("cfg-texto-auto")) byId("cfg-texto-auto").checked = appSettings.text_autogrow !== false;
     byId("btn-bold").classList.toggle("active", Boolean(appSettings.bold));
     byId("btn-italic").classList.toggle("active", Boolean(appSettings.italic));
     byId("btn-underline").classList.toggle("active", Boolean(appSettings.underline));
@@ -240,10 +271,14 @@ function readPreferences() {
         pen_thickness: strokeWidths.Caneta,
         highlighter_thickness: strokeWidths.MarcaTexto,
         recent_colors: recentColors,
-        font_size: Number(byId("cfg-fonte").value) || 28,
-        number: Number(byId("cfg-numero").value) || 1,
+        font_size: toolSizes.Texto,
+        tool_sizes: {...toolSizes},
+        number: String(byId("cfg-numero").value || "1"),
+        cloud_free: cloudFreeMode,
         balloon_fill: byId("cfg-balao-fill") ? byId("cfg-balao-fill").checked : true,
         balloon_line: byId("cfg-balao-line") ? byId("cfg-balao-line").checked : false,
+        review_fill: byId("cfg-revisao-fill") ? byId("cfg-revisao-fill").checked : false,
+        text_autogrow: byId("cfg-texto-auto") ? byId("cfg-texto-auto").checked : true,
         bold: byId("btn-bold").classList.contains("active"),
         italic: byId("btn-italic").classList.contains("active"),
         underline: byId("btn-underline").classList.contains("active")
@@ -394,6 +429,7 @@ function selectTool(toolName, announce = true) {
     interactionMode = null;
     if (strokeResizeTools.has(toolName)) byId("cfg-espessura").value = strokeWidths[toolName];
     else byId("cfg-espessura").value = Math.min(20, Number(byId("cfg-espessura").value) || 4);
+    if (toolSizes[toolName] !== undefined) byId("cfg-fonte").value = toolSizes[toolName];
     syncEditionFormatControlsFromMain();
     canvas.style.cursor = currentTool === "Mover" ? "default" : "crosshair";
     if (bgImage || workspaceMode === "edition") redraw();
@@ -416,6 +452,9 @@ function syncFormatControlsFromSelection(shape) {
         if (byId("cfg-balao-fill")) byId("cfg-balao-fill").checked = shape.fillBalloon !== false;
         if (byId("cfg-balao-line")) byId("cfg-balao-line").checked = Boolean(shape.lineBalloon);
     }
+    if (shape.type === "Revisao" && byId("cfg-revisao-fill")) byId("cfg-revisao-fill").checked = shape.fillReview === true;
+    if (shape.type === "Nuvem" && byId("cfg-nuvem-livre")) byId("cfg-nuvem-livre").checked = isFreeCloud(shape);
+    if (shape.type === "Texto" && byId("cfg-texto-auto")) byId("cfg-texto-auto").checked = shape.autoHeight !== false;
     byId("btn-bold").classList.toggle("active", Boolean(shape.bold));
     byId("btn-italic").classList.toggle("active", Boolean(shape.italic));
     byId("btn-underline").classList.toggle("active", Boolean(shape.underline));
@@ -477,6 +516,8 @@ function applyCurrentFormattingToSelection() {
             shape.fillBalloon = options.fillBalloon;
             shape.lineBalloon = options.lineBalloon;
         }
+        if (shape.type === "Revisao") shape.fillReview = options.fillReview;
+        if (shape.type === "Texto") shape.autoHeight = options.autoHeight;
     }
     redraw();
     setStatus("Formatação aplicada à seleção.");
@@ -491,7 +532,8 @@ function applyCurrentFormattingToActiveEditor() {
     Object.assign(target, {
         color: options.color, thick: options.thick, font: options.font,
         bold: options.bold, italic: options.italic, underline: options.underline,
-        fillBalloon: options.fillBalloon, lineBalloon: options.lineBalloon
+        fillBalloon: options.fillBalloon, lineBalloon: options.lineBalloon,
+        fillReview: options.fillReview
     });
     const scale = canvasScale();
     const editorFont = target.type === "Balao"
@@ -511,6 +553,13 @@ function handleFormatControlChanged() {
     const maximum = tool === "MarcaTexto" ? 80 : 20;
     byId("cfg-espessura").value = Math.max(1, Math.min(maximum, Number(byId("cfg-espessura").value) || 4));
     if (strokeResizeTools.has(tool)) strokeWidths[tool] = Number(byId("cfg-espessura").value);
+    if (toolSizes[tool] !== undefined) {
+        const size = clampToolSize(tool, byId("cfg-fonte").value);
+        toolSizes[tool] = size;
+        byId("cfg-fonte").value = size;
+    }
+    if (byId("cfg-nuvem-livre")) cloudFreeMode = byId("cfg-nuvem-livre").checked;
+    if (activeFormatPopover && activeFormatPopover.id === "cloud-options-popover") renderCloudMenu(activeFormatPopover);
     syncEditionFormatControlsFromMain();
     if (applyCurrentFormattingToActiveEditor()) {
         persistPreferences();
@@ -525,10 +574,11 @@ document.querySelectorAll(".style-btn").forEach(button => {
 });
 [
     "cfg-cor", "cfg-espessura", "cfg-fonte", "cfg-numero", "cfg-balao-fill", "cfg-balao-line",
+    "cfg-revisao-fill", "cfg-nuvem-livre", "cfg-texto-auto",
     "cfg-delay", "cfg-autocopy", "cfg-autosave", "cfg-video-format", "cfg-video-fps", "cfg-video-audio"
 ].forEach(id => {
     const element = byId(id);
-    if (element) element.addEventListener("change", id.startsWith("cfg-") && ["cfg-cor", "cfg-espessura", "cfg-fonte", "cfg-balao-fill", "cfg-balao-line"].includes(id)
+    if (element) element.addEventListener("change", id.startsWith("cfg-") && ["cfg-cor", "cfg-espessura", "cfg-fonte", "cfg-balao-fill", "cfg-balao-line", "cfg-revisao-fill", "cfg-nuvem-livre", "cfg-texto-auto"].includes(id)
         ? handleFormatControlChanged
         : persistPreferences);
 });
@@ -877,6 +927,54 @@ function formattingTool() {
     return annotations[selectedIndex]?.type || currentTool;
 }
 
+function clampToolSize(tool, value) {
+    const size = Math.round(Number(value));
+    if (!Number.isFinite(size)) return toolSizes[tool] ?? 20;
+    if (tool === "Nuvem") return Math.max(3, Math.min(60, size));
+    return Math.max(8, Math.min(200, size));
+}
+
+function isFreeCloud(shape) {
+    return Boolean(shape) && shape.type === "Nuvem" && shape.free === true;
+}
+
+function drawingFreeCloud() {
+    return currentTool === "Nuvem" && cloudFreeMode;
+}
+
+// Traco a mao livre, nuvem livre e linha ortogonal vivem em "points": mover,
+// escalar e delimitar essas marcacoes passa pela lista de pontos, nao por
+// x/y/w/h.
+function isPointShape(shape) {
+    return Boolean(shape) && (strokeResizeTools.has(shape.type) || shape.type === "LinhaOrto" || isFreeCloud(shape));
+}
+
+// Converte pixels de tela em unidades do documento. Alcas, tracejado da selecao
+// e tolerancia do clique nao podem encolher quando o zoom ou o supersampling
+// aumentam a escala do canvas.
+function screenUnits(pixels) {
+    return pixels / Math.max(0.05, canvasScale().x);
+}
+
+// O campo de tamanho e um so, mas o rotulo e os limites mudam com a ferramenta.
+function updateSizeFieldLabel() {
+    const tool = formattingTool();
+    const label = sizeLabels[tool] || "Fonte";
+    const cloud = tool === "Nuvem";
+    for (const id of ["label-fonte", "ed-label-fonte"]) {
+        const element = byId(id);
+        if (element) element.textContent = `${label}/Nº`;
+    }
+    for (const id of ["cfg-fonte", "ed-cfg-fonte"]) {
+        const input = byId(id);
+        if (!input) continue;
+        input.min = cloud ? 3 : 8;
+        input.max = cloud ? 60 : 200;
+        input.title = cloud ? "Raio do festonado da nuvem" : `${label}: tamanho em pixels da imagem`;
+        input.setAttribute("aria-label", cloud ? "Raio do festonado" : `Tamanho: ${label}`);
+    }
+}
+
 function refreshDrawingControls() {
     document.documentElement.style.setProperty("--drawing-color", byId("cfg-cor").value);
     const marker = formattingTool() === "MarcaTexto";
@@ -885,6 +983,7 @@ function refreshDrawingControls() {
         byId(id).title = "Espessura em pixels da imagem";
         byId(id).setAttribute("aria-label", "Espessura em pixels");
     }
+    updateSizeFieldLabel();
 }
 
 function closeFormatPopover(restoreFocus = false) {
@@ -1076,6 +1175,36 @@ function initializeDrawingPickers() {
             openFormatPopover(thickness, button);
         };
     });
+    // Menu da nuvem de revisão, no mesmo lugar em que a caneta e o marca-texto
+    // têm o deles: raio do festonado e traço retangular ou à mão livre.
+    const cloudMenu = document.createElement("section");
+    cloudMenu.id = "cloud-options-popover";
+    cloudMenu.className = "format-popover";
+    cloudMenu.hidden = true;
+    cloudMenu.setAttribute("role", "dialog");
+    cloudMenu.setAttribute("aria-label", "Nuvem de revisão");
+    document.body.append(cloudMenu);
+    document.querySelectorAll('.tool-btn[data-tool="Nuvem"]').forEach(toolButton => {
+        const wrapper = document.createElement("div");
+        wrapper.className = "stroke-tool";
+        toolButton.before(wrapper);
+        wrapper.append(toolButton);
+        const button = document.createElement("button");
+        button.className = "stroke-menu-trigger";
+        button.textContent = "⌄";
+        button.title = "Opções da nuvem de revisão";
+        button.setAttribute("aria-label", button.title);
+        button.setAttribute("aria-expanded", "false");
+        wrapper.append(button);
+        button.onclick = () => {
+            if (activeFormatPopover === cloudMenu && formatPopoverAnchor === button) return closeFormatPopover();
+            const editingSelection = annotations[selectedIndex]?.type === "Nuvem";
+            if (!editingSelection) { finishActiveCommand(true); selectTool("Nuvem"); }
+            renderCloudMenu(cloudMenu);
+            openFormatPopover(cloudMenu, button);
+        };
+    });
+
     document.addEventListener("mousedown", event => {
         if (activeFormatPopover && !activeFormatPopover.contains(event.target) && !formatPopoverAnchor.contains(event.target)) closeFormatPopover();
     });
@@ -1084,29 +1213,153 @@ function initializeDrawingPickers() {
     refreshDrawingControls();
 }
 
-function appendStrokePoint(point, final = false) {
-    const last = currentPoints[currentPoints.length - 1];
-    const distance = last ? Math.hypot(point.x-last.x, point.y-last.y) : Infinity;
-    // Elimina tremores subpixel, sem atrasar a ponta ou perder o ponto final.
-    const threshold = Math.min(2, .75 / Math.max(.1, canvasScale().x));
-    if (distance > 0 && (final || distance >= threshold)) currentPoints.push(point);
+function beginStroke(point) {
+    currentPoints = [point];
+    currentSmooth = [{x: point.x, y: point.y}];
 }
 
+function clearStroke() {
+    currentPoints = [];
+    currentSmooth = [];
+}
+
+// O menu se redesenha a cada escolha para os botões refletirem o estado atual.
+function renderCloudMenu(popover) {
+    const selecionada = annotations[selectedIndex]?.type === "Nuvem" ? annotations[selectedIndex] : null;
+    const livre = selecionada ? isFreeCloud(selecionada) : cloudFreeMode;
+    const raio = selecionada ? cloudRadius(selecionada) : toolSizes.Nuvem;
+    popover.innerHTML = `<div class="picker-heading">Nuvem de revisão<button class="picker-close" aria-label="Fechar">×</button></div>
+        <span class="picker-label">Traço</span>
+        <div class="option-choices">
+            <button class="option-choice" data-cloud="box" aria-pressed="${!livre}">
+                <span class="material-symbols-outlined">crop_square</span><span>Retangular</span></button>
+            <button class="option-choice" data-cloud="free" aria-pressed="${livre}">
+                <span class="material-symbols-outlined">gesture</span><span>À mão livre</span></button>
+        </div>
+        <span class="picker-label">Raio do festonado</span>
+        <div class="stroke-choices"></div>
+        <span class="picker-label">Outros valores: campo Raio na faixa.</span>`;
+    popover.querySelector(".picker-close").onclick = () => closeFormatPopover(true);
+    popover.querySelectorAll("[data-cloud]").forEach(choice => {
+        choice.onclick = () => {
+            applyCloudFreeMode(choice.dataset.cloud === "free");
+            renderCloudMenu(popover);
+            positionFormatPopover();
+        };
+    });
+    const choices = popover.querySelector(".stroke-choices");
+    [5, 7, 9, 12, 16, 22, 30].forEach(valor => {
+        const choice = document.createElement("button");
+        choice.className = "stroke-choice";
+        choice.setAttribute("aria-label", `Raio ${valor} pixels`);
+        choice.setAttribute("aria-pressed", String(raio === valor));
+        // A amostra comprime a escala do raio para caber na altura da linha.
+        choice.innerHTML = `<span class="cloud-sample" style="--cloud-radius:${(3 + valor * 0.33).toFixed(1)}px"></span><span>${valor} px</span>`;
+        choice.onclick = () => {
+            byId("cfg-fonte").value = valor;
+            handleFormatControlChanged();
+            renderCloudMenu(popover);
+            positionFormatPopover();
+        };
+        choices.append(choice);
+    });
+}
+
+// Vale para as próximas nuvens e, se houver uma selecionada, também para ela.
+function applyCloudFreeMode(livre) {
+    cloudFreeMode = livre;
+    if (byId("cfg-nuvem-livre")) byId("cfg-nuvem-livre").checked = livre;
+    const selecionada = annotations[selectedIndex];
+    if (selecionada && selecionada.type === "Nuvem" && isFreeCloud(selecionada) !== livre) {
+        // Só a nuvem desenhada à mão livre tem traço próprio; a retangular usa a
+        // caixa. Trocar de tipo sem os pontos deixaria a marcação vazia.
+        if (!livre) {
+            pushHistory();
+            const caixa = annotationBounds(selecionada);
+            selecionada.free = undefined;
+            selecionada.x = caixa.x;
+            selecionada.y = caixa.y;
+            selecionada.w = caixa.w;
+            selecionada.h = caixa.h;
+            invalidateShapeBounds(selecionada);
+            redraw();
+        } else if (Array.isArray(selecionada.points) && selecionada.points.length > 2) {
+            pushHistory();
+            selecionada.free = true;
+            invalidateShapeBounds(selecionada);
+            redraw();
+        } else {
+            setStatus("A nuvem retangular vira à mão livre apenas ao ser desenhada assim.");
+        }
+    }
+    persistPreferences();
+}
+
+function appendStrokePoint(point, final = false) {
+    const previous = currentPoints[currentPoints.length - 1];
+    const distance = previous ? Math.hypot(point.x-previous.x, point.y-previous.y) : Infinity;
+    // Passo constante na tela: elimina o tremor subpixel e mantém o traço com a
+    // mesma densidade de pontos em qualquer zoom.
+    const threshold = Math.min(3, Math.max(.6, STROKE_MIN_DISTANCE / Math.max(.1, canvasScale().x)));
+    if (!(distance > 0 && (final || distance >= threshold))) return;
+    currentPoints.push(point);
+    const last = currentPoints.length - 1;
+    // Média ponderada 1-2-1 no ponto que deixou de ser a ponta. A ponta em si
+    // fica crua, para o traço não ficar atrasado em relação ao cursor.
+    if (last >= 2) {
+        const before = currentPoints[last - 2];
+        const middle = currentPoints[last - 1];
+        currentSmooth[last - 1] = {
+            x: (before.x + middle.x * 2 + point.x) / 4,
+            y: (before.y + middle.y * 2 + point.y) / 4
+        };
+    }
+    currentSmooth.push({x: point.x, y: point.y});
+}
+
+// Tira o "degrau" do traço antes de virar curva: descarta os pontos colados
+// demais e passa uma média ponderada 1-2-1 pelos que sobraram. É o tratamento
+// do Notas de Engenharia, e vale para o preview, a cópia e a exportação.
+function smoothStrokePoints(points, passes = 1) {
+    if (!Array.isArray(points) || points.length <= 2) return (points || []).map(point => ({x: point.x, y: point.y}));
+    const filtered = [points[0]];
+    for (let i = 1; i < points.length - 1; i++) {
+        const previous = filtered[filtered.length - 1];
+        if (Math.hypot(points[i].x - previous.x, points[i].y - previous.y) >= STROKE_MIN_DISTANCE) filtered.push(points[i]);
+    }
+    const last = points[points.length - 1];
+    if (Math.hypot(last.x - filtered[filtered.length - 1].x, last.y - filtered[filtered.length - 1].y) > 0) filtered.push(last);
+    let result = filtered.map(point => ({x: point.x, y: point.y}));
+    for (let pass = 0; pass < passes && result.length > 2; pass++) {
+        const source = result;
+        result = source.map((point, index) => {
+            if (index === 0 || index === source.length - 1) return point;
+            const previous = source[index - 1];
+            const next = source[index + 1];
+            return {x: (previous.x + point.x * 2 + next.x) / 4, y: (previous.y + point.y * 2 + next.y) / 4};
+        });
+    }
+    return result;
+}
+
+// Os pontos já chegam suavizados (appendStrokePoint durante o traço,
+// smoothStrokePoints ao concluir): aqui só resta transformá-los em curva.
 function drawSmoothStroke(context, points) {
-    if (!points.length) return;
-    if (points.length === 1) {
-        context.arc(points[0].x, points[0].y, context.lineWidth / 2, 0, Math.PI * 2);
+    const smooth = points;
+    if (!smooth || !smooth.length) return;
+    context.beginPath();
+    if (smooth.length === 1) {
+        context.arc(smooth[0].x, smooth[0].y, context.lineWidth / 2, 0, Math.PI * 2);
         context.fill();
         return;
     }
-    context.moveTo(points[0].x, points[0].y);
+    context.moveTo(smooth[0].x, smooth[0].y);
     // Curvas por pontos médios: tangentes contínuas e sem ultrapassar o traço.
-    // A mesma geometria é usada no preview, na imagem copiada e na exportação.
-    for (let i = 1; i < points.length - 1; i++) {
-        const p = points[i], next = points[i+1];
+    for (let i = 1; i < smooth.length - 1; i++) {
+        const p = smooth[i], next = smooth[i+1];
         context.quadraticCurveTo(p.x, p.y, (p.x+next.x)/2, (p.y+next.y)/2);
     }
-    const last = points[points.length-1];
+    const last = smooth[smooth.length-1];
     context.lineTo(last.x, last.y);
     context.stroke();
 }
@@ -1115,20 +1368,32 @@ function getOptions() {
     return {
         color: byId("cfg-cor").value || "#107C41",
         thick: Math.max(1, Number(byId("cfg-espessura").value) || 4) / (formattingTool() === "MarcaTexto" ? 4 : 1),
-        font: Math.max(8, Number(byId("cfg-fonte").value) || 28),
+        font: clampToolSize(formattingTool(), byId("cfg-fonte").value),
         bold: byId("btn-bold").classList.contains("active"),
         italic: byId("btn-italic").classList.contains("active"),
         underline: byId("btn-underline").classList.contains("active"),
         fillBalloon: byId("cfg-balao-fill") ? byId("cfg-balao-fill").checked : true,
-        lineBalloon: byId("cfg-balao-line") ? byId("cfg-balao-line").checked : false
+        lineBalloon: byId("cfg-balao-line") ? byId("cfg-balao-line").checked : false,
+        fillReview: byId("cfg-revisao-fill") ? byId("cfg-revisao-fill").checked : false,
+        autoHeight: byId("cfg-texto-auto") ? byId("cfg-texto-auto").checked : true
     };
 }
 
-function canvasScale() {
-    return {
+// Ler clientWidth forca o navegador a recalcular o layout. Como canvasScale e
+// consultada dezenas de vezes por quadro (alcas, tolerancias, editor de texto),
+// o valor e medido uma vez por quadro e reaproveitado.
+let canvasScaleCache = {x: 1, y: 1};
+
+function refreshCanvasScale() {
+    canvasScaleCache = {
         x: canvas.clientWidth / Math.max(1, docWidth),
         y: canvas.clientHeight / Math.max(1, docHeight)
     };
+    return canvasScaleCache;
+}
+
+function canvasScale() {
+    return canvasScaleCache;
 }
 
 function finishActiveCommand(commit = true) {
@@ -1144,7 +1409,7 @@ function finishActiveCommand(commit = true) {
     if (isDrawing && currentTool !== "Mover") {
         isDrawing = false;
         startPoint = null;
-        currentPoints = [];
+        clearStroke();
         preview = null;
         handled = true;
         if (bgImage || workspaceMode === "edition") redraw();
@@ -1204,6 +1469,10 @@ function isTextEditable(shape) {
 
 function editorPointForAnnotation(shape) {
     if (shape.type === "Texto") return {x: shape.x, y: shape.y};
+    if (shape.type === "Chamada") {
+        const rect = calloutTextRect(shape);
+        return {x: Math.max(0, rect.x), y: Math.max(0, rect.y)};
+    }
     if (shape.type === "Balao") {
         const badge = balloonBadgePoint(shape);
         const font = balloonFontSize(shape);
@@ -1224,8 +1493,14 @@ function createFloatingTextEditor({kind, point, options, shape = null, editIndex
     editor.style.left = `${point.x * scale.x}px`;
     editor.style.top = `${point.y * scale.y}px`;
     const compact = kind === "shapeLabel" || kind === "editShapeLabel";
-    const widthCanvas = kind === "editText" && options.w ? options.w : Math.max(compact ? 120 : 180, options.font * (compact ? 4.8 : 7));
-    const heightCanvas = kind === "editText" && options.h ? options.h : Math.max(compact ? 34 : 70, options.font * (compact ? 1.7 : 2.6));
+    // A chamada digita na mesma caixa em que o texto vai aparecer.
+    const callout = options.type === "Chamada";
+    const widthCanvas = callout
+        ? calloutTextWidth(options)
+        : (kind === "editText" && options.w ? options.w : Math.max(compact ? 120 : 180, options.font * (compact ? 4.8 : 7)));
+    const heightCanvas = callout
+        ? Math.max(options.font * 1.7, Number(options.textH) || 0)
+        : (kind === "editText" && options.h ? options.h : Math.max(compact ? 34 : 70, options.font * (compact ? 1.7 : 2.6)));
     editor.style.width = `${widthCanvas * scale.x}px`;
     editor.style.height = `${heightCanvas * scale.y}px`;
     editor.style.color = options.color;
@@ -1280,15 +1555,23 @@ function finalizeTextEditor(commit = true, switchToMover = true) {
         if (commit) {
             pushHistory();
             edited.text = text;
+            if (edited.type === "Chamada") {
+                edited.textW = Math.max(40, editorRect.width * docWidth / Math.max(1, canvasRect.width));
+                if (edited.autoHeight === false) {
+                    edited.textH = Math.max(16, editorRect.height * docHeight / Math.max(1, canvasRect.height));
+                }
+            }
             if (edited.type === "Texto") {
                 edited.x = (editorRect.left - canvasRect.left) * docWidth / Math.max(1, canvasRect.width);
                 edited.y = (editorRect.top - canvasRect.top) * docHeight / Math.max(1, canvasRect.height);
                 edited.w = editorRect.width * docWidth / Math.max(1, canvasRect.width);
-                // Preserva a altura esticada manualmente na caixa; se o texto
-                // cresceu além dela, usa a altura do conteúdo (drawTextBox
-                // reforça o mínimo para nunca cortar).
+                // Com o autoajuste ligado a caixa acompanha o texto digitado.
+                // Desligado (a altura já foi definida à mão), o tamanho escolhido
+                // manda e é o texto que encolhe para caber.
                 const editorH = editorRect.height * docHeight / Math.max(1, canvasRect.height);
-                edited.h = Math.max(edited.h || 0, editorH);
+                edited.h = edited.autoHeight === false
+                    ? Math.max(edited.h || 0, (edited.font || 18) * 1.2)
+                    : Math.max(edited.h || 0, editorH);
             }
             selectedIndex = editIndex;
             setStatus("Texto atualizado.");
@@ -1302,7 +1585,9 @@ function finalizeTextEditor(commit = true, switchToMover = true) {
     }
 
     const annotation = kind === "shapeLabel" && shape
-        ? {...shape, text}
+        ? (shape.type === "Chamada"
+            ? {...shape, text, textW: Math.max(40, editorRect.width * docWidth / Math.max(1, canvasRect.width))}
+            : {...shape, text})
         : {
             type: "Texto",
             x: (editorRect.left - canvasRect.left) * docWidth / Math.max(1, canvasRect.width),
@@ -1367,6 +1652,47 @@ function finalizeOrthogonalPath(commit = true) {
     redraw();
 }
 
+// O ponteiro dispara centenas de eventos por segundo; procurar a marcação sob o
+// cursor a cada um deles é o que tirava a fluidez do Mover. Um por quadro basta
+// para o cursor certo aparecer.
+let hoverPending = false;
+let hoverPoint = null;
+
+function scheduleHoverCursor(point) {
+    hoverPoint = point;
+    if (hoverPending) return;
+    hoverPending = true;
+    requestAnimationFrame(() => {
+        hoverPending = false;
+        if (hoverPoint) updateHoverCursor(hoverPoint);
+    });
+}
+
+function updateHoverCursor(point) {
+    if (currentTool !== "Mover" || isDrawing) return;
+    const hit = findAnnotationAt(point.x, point.y);
+    if (hit.index >= 0) {
+        if (hit.handle === "box-resize" || hit.handle === "line-resize" || hit.handle === "callout-text") {
+            canvas.style.cursor = resizeHandleCursor(hit.corner);
+        } else if (hit.handle === "marker-resize") {
+            canvas.style.cursor = "nwse-resize";
+        } else if (hit.handle === "dimension-grip") {
+            canvas.style.cursor = dimensionGripCursor(annotations[hit.index]);
+        } else if (hit.handle === "balloon-tip") {
+            canvas.style.cursor = "crosshair";
+        } else {
+            canvas.style.cursor = "move";
+        }
+        return;
+    }
+    if (workspaceMode === "edition") {
+        const imageHit = findEditionItemAt(point.x, point.y);
+        canvas.style.cursor = imageHit.handle === "resize" ? "nwse-resize" : (imageHit.index >= 0 ? "move" : "default");
+        return;
+    }
+    canvas.style.cursor = "default";
+}
+
 function getMousePos(event) {
     const rect = canvas.getBoundingClientRect();
     return {
@@ -1419,7 +1745,8 @@ canvas.addEventListener("mousedown", event => {
         if (selectedIndex >= 0) {
             selectedEditionItemIndex = -1;
             const annotation = annotations[selectedIndex];
-            if (hit.handle === "box-resize" || hit.handle === "line-resize") {
+            if (hit.handle === "box-resize" || hit.handle === "line-resize"
+                || hit.handle === "marker-resize" || hit.handle === "callout-text") {
                 interactionMode = hit.handle;
                 resizeCorner = hit.corner;
             } else if (hit.handle === "dimension-grip") {
@@ -1431,9 +1758,6 @@ canvas.addEventListener("mousedown", event => {
             }
             const anchor = annotationAnchor(annotation);
             dragOffset = {x: point.x - anchor.x, y: point.y - anchor.y};
-            dimensionGripState = interactionMode === "dimension-grip"
-                ? createDimensionGripState(annotation, hit.gripIndex)
-                : null;
             beginHistoryTransaction();
             isDrawing = true;
             syncFormatControlsFromSelection(annotation);
@@ -1466,8 +1790,7 @@ canvas.addEventListener("mousedown", event => {
         pushHistory();
         annotations.push({type: "Revisao", x: point.x, y: point.y, text: String(numberInput.value || "R"), ...options});
         selectedIndex = annotations.length - 1;
-        const nextValue = Number(numberInput.value);
-        if (Number.isFinite(nextValue)) numberInput.value = nextValue + 1;
+        numberInput.value = nextSequenceText(numberInput.value || "R");
         persistPreferences();
         redraw();
         scheduleClipboardSync();
@@ -1485,7 +1808,7 @@ canvas.addEventListener("mousedown", event => {
             const numberInput = byId("cfg-numero");
             pushHistory();
             annotations.push({type: "Balao", x: point.x, y: point.y, w: 0, h: 0, text: String(numberInput.value), ...options});
-            numberInput.value = (Number(numberInput.value) || 1) + 1;
+            numberInput.value = nextSequenceText(numberInput.value || "1");
             persistPreferences();
             redraw();
             scheduleClipboardSync();
@@ -1513,7 +1836,10 @@ canvas.addEventListener("mousedown", event => {
 
     startPoint = point;
     isDrawing = true;
-    currentPoints = (currentTool === "Caneta" || currentTool === "MarcaTexto") ? [point] : [];
+    // A nuvem à mão livre é traçada como a caneta: o festonado nasce depois, em
+    // cima da linha desenhada.
+    if (strokeResizeTools.has(currentTool) || drawingFreeCloud()) beginStroke(point);
+    else clearStroke();
     preview = createShape(currentTool, point, point, options);
 });
 
@@ -1528,23 +1854,7 @@ canvas.addEventListener("pointermove", event => {
         return;
     }
     if (currentTool === "Mover" && !isDrawing) {
-        const hit = findAnnotationAt(point.x, point.y);
-        if (hit.index >= 0) {
-            if (hit.handle === "box-resize" || hit.handle === "line-resize") {
-                canvas.style.cursor = resizeHandleCursor(hit.corner);
-            } else if (hit.handle === "dimension-grip") {
-                canvas.style.cursor = dimensionGripCursor(annotations[hit.index]);
-            } else if (hit.handle === "balloon-tip") {
-                canvas.style.cursor = "crosshair";
-            } else {
-                canvas.style.cursor = "move";
-            }
-        } else if (workspaceMode === "edition") {
-            const imageHit = findEditionItemAt(point.x, point.y);
-            canvas.style.cursor = imageHit.handle === "resize" ? "nwse-resize" : (imageHit.index >= 0 ? "move" : "default");
-        } else {
-            canvas.style.cursor = "default";
-        }
+        scheduleHoverCursor(point);
     }
     if (!isDrawing) return;
 
@@ -1562,15 +1872,23 @@ canvas.addEventListener("pointermove", event => {
     if (currentTool === "Mover" && selectedIndex >= 0) {
         const annotation = annotations[selectedIndex];
         if (interactionMode === "box-resize") {
-            if (strokeResizeTools.has(annotation.type)) {
+            if (isPointShape(annotation)) {
                 resizeStrokeShape(annotation, resizeCorner, point);
             } else if (annotation.type === "Circulo" && resizeCorner && resizeCorner.length === 2) {
                 resizeCircleCorner(annotation, resizeCorner, point);
             } else if (annotation.type === "Texto") {
-                resizeBoxShape(annotation, resizeCorner, point, Math.max(24, (annotation.font || 18) * 0.7));
+                // Arrastar uma alça de cima ou de baixo desliga o autoajuste: a
+                // partir daí a caixa manda e o texto encolhe para caber nela,
+                // como no PowerPoint.
+                if (/[ns]/.test(resizeCorner || "")) annotation.autoHeight = false;
+                resizeBoxShape(annotation, resizeCorner, point, Math.max(12, (annotation.font || 18) * 0.35));
             } else {
                 resizeBoxShape(annotation, resizeCorner, point);
             }
+        } else if (interactionMode === "marker-resize") {
+            resizeMarkerShape(annotation, point);
+        } else if (interactionMode === "callout-text") {
+            resizeCalloutText(annotation, resizeCorner, point);
         } else if (interactionMode === "line-resize") {
             resizeLineShape(annotation, resizeCorner, point);
         } else if (interactionMode === "dimension-grip" && annotation.type === "CotaLivre") {
@@ -1586,13 +1904,12 @@ canvas.addEventListener("pointermove", event => {
 
     if (!startPoint) return;
     point = applyDimensionMagnet(currentTool, startPoint, point);
-    if (strokeResizeTools.has(currentTool)) {
+    if (strokeResizeTools.has(currentTool) || drawingFreeCloud()) {
         const samples = event.getCoalescedEvents?.() || [];
         for (const sample of samples) appendStrokePoint(getMousePos(sample));
         appendStrokePoint(point);
     }
     preview = createShape(currentTool, startPoint, point, getOptions());
-    preview.points = currentPoints.slice();
     if (currentTool === "Balao") preview.text = String(byId("cfg-numero").value || "1");
     scheduleRedraw();
 });
@@ -1606,7 +1923,6 @@ function finishDrawing(event) {
         }
         isDrawing = false;
         interactionMode = null;
-        dimensionGripState = null;
         resizeCorner = null;
         commitHistoryTransaction();
         redraw();
@@ -1615,18 +1931,18 @@ function finishDrawing(event) {
     }
     if (event && startPoint) {
         const point = applyDimensionMagnet(currentTool, startPoint, getMousePos(event));
-        if (strokeResizeTools.has(currentTool)) appendStrokePoint(point, true);
+        if (strokeResizeTools.has(currentTool) || drawingFreeCloud()) appendStrokePoint(point, true);
         preview = createShape(currentTool, startPoint, point, getOptions());
-        preview.points = currentPoints.slice();
     }
     isDrawing = false;
     let committed = false;
+    if (preview) freezeStrokePoints(preview);
     if (preview && shapeHasSize(preview)) {
         if (currentTool === "Cortar") {
             const cropShape = preview;
             preview = null;
             startPoint = null;
-            currentPoints = [];
+            clearStroke();
             cropToShape(cropShape);
             selectTool("Mover", false);
             return;
@@ -1636,14 +1952,14 @@ function finishDrawing(event) {
             pushHistory();
             annotations.push(preview);
             selectedIndex = annotations.length - 1;
-            numberInput.value = (Number(numberInput.value) || 1) + 1;
+            numberInput.value = nextSequenceText(numberInput.value || "1");
             persistPreferences();
             committed = true;
         } else if (labelTools.has(currentTool)) {
             const shape = preview;
             preview = null;
             startPoint = null;
-            currentPoints = [];
+            clearStroke();
             redraw();
             startShapeLabelEditor(shape, labelPointForShape(shape));
             return;
@@ -1655,7 +1971,7 @@ function finishDrawing(event) {
     }
     preview = null;
     startPoint = null;
-    currentPoints = [];
+    clearStroke();
     redraw();
     if (committed) scheduleClipboardSync();
 }
@@ -1692,19 +2008,39 @@ function createShape(type, start, end, options) {
         width = (width < 0 ? -1 : 1) * side;
         height = (height < 0 ? -1 : 1) * side;
     }
-    return {
+    const freehand = strokeResizeTools.has(type) || (type === "Nuvem" && cloudFreeMode);
+    const shape = {
         type,
         x: start.x,
         y: start.y,
         w: width,
         h: height,
-        points: currentPoints.slice(),
+        // O preview aponta para a lista viva do traço; copiar ponto a ponto a
+        // cada movimento do mouse era o que travava o risco longo. A cópia
+        // própria é feita uma vez só, em freezeStrokePoints, ao concluir.
+        points: freehand ? currentSmooth : [],
         ...options
     };
+    if (type === "Nuvem" && cloudFreeMode) shape.free = true;
+    if (type === "CotaLivre" && !Number.isFinite(Number(shape.extension))) shape.extension = DEFAULT_DIM_EXTENSION;
+    return shape;
+}
+
+// Congela o traço no momento em que ele vira marcação: cópia própria dos pontos
+// e, no marca-texto, um passe extra de suavização (a tarja é larga e o "bico"
+// das curvas aparece mais nela).
+function freezeStrokePoints(shape) {
+    if (!shape || !Array.isArray(shape.points) || !shape.points.length) return shape;
+    shape.points = shape.type === "MarcaTexto"
+        ? smoothStrokePoints(shape.points, 1)
+        : shape.points.map(point => ({x: point.x, y: point.y}));
+    invalidateShapeBounds(shape);
+    return shape;
 }
 
 function shapeHasSize(shape) {
     if (strokeResizeTools.has(shape.type)) return shape.points.length > 0;
+    if (isFreeCloud(shape)) return Array.isArray(shape.points) && shape.points.length > 2;
     if (shape.type === "LinhaOrto" && Array.isArray(shape.points)) return shape.points.length > 1;
     return Math.abs(shape.w) > 2 || Math.abs(shape.h) > 2;
 }
@@ -1715,6 +2051,7 @@ function renderScale() {
 
 function redraw() {
     redrawPending = false;
+    refreshCanvasScale();
     // Tudo é desenhado em coordenadas do documento; esta escala leva o traço
     // para a resolução em que ele aparece na tela.
     const scale = renderScale();
@@ -1794,7 +2131,7 @@ function drawShape(context, shape, selected = false, temporary = false) {
         context.lineTo(shape.x + shape.w, shape.y + shape.h);
         context.stroke();
     } else if (shape.type === "Seta") {
-        drawArrow(context, shape.x, shape.y, shape.x + shape.w, shape.y + shape.h, shape.thick);
+        drawArrow(context, shape.x, shape.y, shape.x + shape.w, shape.y + shape.h, shape.thick, shape.font);
     } else if (shape.type === "CotaLivre") {
         drawFreeDimension(context, shape);
     } else if (shape.type === "CotaAngulo") {
@@ -1814,7 +2151,8 @@ function drawShape(context, shape, selected = false, temporary = false) {
         }
         context.stroke();
     } else if (shape.type === "Nuvem") {
-        drawCloudBox(context, shape.x, shape.y, shape.w, shape.h);
+        if (isFreeCloud(shape)) drawFreeCloud(context, shape.points || [], cloudRadius(shape));
+        else drawCloudBox(context, shape.x, shape.y, shape.w, shape.h, cloudRadius(shape));
     } else if (shape.type === "Caneta" || shape.type === "MarcaTexto") {
         if (shape.points.length) {
             if (shape.type === "MarcaTexto") {
@@ -1851,8 +2189,12 @@ function drawCropPreview(context, shape) {
     context.restore();
 }
 
-function drawArrow(context, x1, y1, x2, y2, thickness) {
-    const head = 12 + thickness * 2;
+function drawArrow(context, x1, y1, x2, y2, thickness, markerSize = 0) {
+    // A ponta acompanha o tamanho escolhido na faixa ("Ponta"); sem valor
+    // gravado, cai no comportamento antigo, ligado só à espessura.
+    const head = Number(markerSize) > 0
+        ? Math.max(3, Number(markerSize) * 0.72 + thickness * 0.6)
+        : 12 + thickness * 2;
     const halfWidth = Math.max(5, head * 0.42);
     const angle = Math.atan2(y2 - y1, x2 - x1);
     const baseX = x2 - head * Math.cos(angle);
@@ -1891,25 +2233,43 @@ function labelPointForShape(shape) {
         };
     }
     if (shape.type === "Chamada") {
-        const dir = shape.w >= 0 ? 1 : -1;
-        return {x: shape.x + shape.w + 26 * dir, y: shape.y + shape.h - shape.font / 2};
+        const rect = calloutTextRect(shape);
+        return {x: rect.dir > 0 ? rect.x : rect.x + rect.w, y: rect.y};
     }
     return {x: shape.x + shape.w, y: shape.y + shape.h};
 }
 
-function drawFreeDimension(context, shape) {
-    const dx = shape.w;
-    const dy = shape.h;
+// Medidas repetidas da cota livre num lugar só: o desenho, as alças e os
+// limites da seleção usam exatamente a mesma conta.
+function dimensionInfo(shape) {
+    const dx = shape.w || 0;
+    const dy = shape.h || 0;
     const angle = Math.atan2(dy, dx);
-    const endX = shape.x + dx;
-    const endY = shape.y + dy;
-    const midX = shape.x + dx / 2;
-    const midY = shape.y + dy / 2;
-    const tickLen = 10 + (shape.thick || 4);
     const perp = angle + Math.PI / 2;
-    const perpX = Math.cos(perp);
-    const perpY = Math.sin(perp);
-    const extension = Number(shape.extension || 0);
+    const value = Number(shape.extension);
+    return {
+        dx, dy, angle,
+        endX: shape.x + dx,
+        endY: shape.y + dy,
+        midX: shape.x + dx / 2,
+        midY: shape.y + dy / 2,
+        perpX: Math.cos(perp),
+        perpY: Math.sin(perp),
+        extension: Number.isFinite(value) ? value : DEFAULT_DIM_EXTENSION
+    };
+}
+
+function drawFreeDimension(context, shape) {
+    const info = dimensionInfo(shape);
+    const angle = info.angle;
+    const endX = info.endX;
+    const endY = info.endY;
+    const midX = info.midX;
+    const midY = info.midY;
+    const tickLen = 10 + (shape.thick || 4);
+    const perpX = info.perpX;
+    const perpY = info.perpY;
+    const extension = info.extension;
 
     context.beginPath();
     context.moveTo(shape.x, shape.y);
@@ -2004,28 +2364,141 @@ function drawAngleDimension(context, shape) {
     }
 }
 
+// O "pé" horizontal da chamada (onde o texto se apoia) cresce com a fonte,
+// como no Notas de Engenharia: a marcação inteira escala junto.
+function calloutLanding(shape) {
+    return Math.max(16, (Number(shape.font) || 24) * 1.1);
+}
+
+// Contexto só para medir texto fora do desenho (limites e teste de clique).
+let measureContext = null;
+
+function measuringContext() {
+    if (!measureContext) {
+        const surface = document.createElement("canvas");
+        surface.width = 1;
+        surface.height = 1;
+        measureContext = surface.getContext("2d");
+    }
+    return measureContext;
+}
+
+function calloutTextWidth(shape) {
+    // Largura inicial larga o bastante para uma frase caber em poucas linhas;
+    // a partir daí quem manda é a borda arrastada pelo usuário.
+    return Math.max(40, Number(shape.textW) || Math.max(240, (Number(shape.font) || 24) * 9));
+}
+
+// O texto da chamada usa a mesma máquina da ferramenta Texto: reflui na largura
+// da caixa e, quando a altura é fixada à mão, diminui até caber nela.
+function calloutTextLayout(context, shape) {
+    return textBoxLayout(context, {
+        text: shape.text || "",
+        w: calloutTextWidth(shape),
+        h: Number(shape.textH) || 0,
+        font: shape.font,
+        bold: shape.bold,
+        italic: shape.italic,
+        autoHeight: shape.autoHeight
+    });
+}
+
+// A caixa fica encostada no fim do "pé", centrada nele na vertical.
+function calloutTextRect(shape, layout = null) {
+    const measured = layout || calloutTextLayout(measuringContext(), shape);
+    const dir = shape.w >= 0 ? 1 : -1;
+    const width = calloutTextWidth(shape);
+    const height = shape.autoHeight === false
+        ? Math.max(measured.size * 1.4, Number(shape.textH) || 0)
+        : measured.height;
+    const endX = shape.x + (shape.w || 0);
+    const endY = shape.y + (shape.h || 0);
+    const offset = calloutLanding(shape) + 6;
+    return {
+        x: dir > 0 ? endX + offset : endX - offset - width,
+        y: endY - height / 2,
+        w: width,
+        h: height,
+        dir
+    };
+}
+
 function drawCallout(context, shape) {
     const endX = shape.x + shape.w;
     const endY = shape.y + shape.h;
     const dir = shape.w >= 0 ? 1 : -1;
-    const landing = 20;
+    const landing = calloutLanding(shape);
 
-    drawArrow(context, endX, endY, shape.x, shape.y, shape.thick);
+    drawArrow(context, endX, endY, shape.x, shape.y, shape.thick, shape.font);
     context.beginPath();
     context.moveTo(endX, endY);
     context.lineTo(endX + landing * dir, endY);
     context.stroke();
 
-    if (shape.text) {
-        context.font = annotationFont(shape);
-        context.textAlign = dir > 0 ? "left" : "right";
-        context.textBaseline = "middle";
-        context.fillStyle = shape.color;
-        context.fillText(shape.text, endX + (landing + 6) * dir, endY);
+    if (!shape.text) return;
+    const layout = calloutTextLayout(context, shape);
+    const rect = calloutTextRect(shape, layout);
+    context.save();
+    context.textAlign = dir > 0 ? "left" : "right";
+    context.textBaseline = "top";
+    context.fillStyle = shape.color;
+    context.beginPath();
+    // Mesmo numa caixa apertada o texto não some: o recorte cresce se o conteúdo
+    // ainda passar da altura depois de reduzido até o limite.
+    context.rect(rect.x, rect.y, rect.w, Math.max(rect.h, layout.height));
+    context.clip();
+    const baseX = dir > 0 ? rect.x : rect.x + rect.w;
+    layout.lines.forEach((line, index) => {
+        const y = rect.y + 4 + index * layout.lineHeight;
+        context.fillText(line, baseX, y);
+        if (shape.underline) {
+            const width = context.measureText(line).width;
+            context.beginPath();
+            context.lineWidth = Math.max(1, layout.size / 14);
+            context.moveTo(dir > 0 ? baseX : baseX - width, y + layout.size * 1.05);
+            context.lineTo(dir > 0 ? baseX + width : baseX, y + layout.size * 1.05);
+            context.stroke();
+        }
+    });
+    context.restore();
+}
+
+// Arrastar a borda da caixa: os lados refluem o texto, o topo e a base fixam a
+// altura e passam a reduzir a fonte (igual à ferramenta Texto).
+function resizeCalloutText(shape, corner, point) {
+    const rect = calloutTextRect(shape);
+    if (corner.includes("e") || corner.includes("w")) {
+        const borda = rect.dir > 0 ? point.x - rect.x : rect.x + rect.w - point.x;
+        shape.textW = Math.max(40, borda);
+    }
+    if (corner.includes("n") || corner.includes("s")) {
+        shape.autoHeight = false;
+        shape.textH = Math.max(16, Math.abs(point.y - (rect.y + rect.h / 2)) * 2);
     }
 }
 
-function drawCloudBox(context, startX, startY, width, height) {
+function rectHandlePoints(rect) {
+    const midX = rect.x + rect.w / 2;
+    const midY = rect.y + rect.h / 2;
+    const right = rect.x + rect.w;
+    const bottom = rect.y + rect.h;
+    return [
+        {code: "nw", x: rect.x, y: rect.y},
+        {code: "n", x: midX, y: rect.y},
+        {code: "ne", x: right, y: rect.y},
+        {code: "e", x: right, y: midY},
+        {code: "se", x: right, y: bottom},
+        {code: "s", x: midX, y: bottom},
+        {code: "sw", x: rect.x, y: bottom},
+        {code: "w", x: rect.x, y: midY}
+    ];
+}
+
+function cloudRadius(shape) {
+    return Number(shape && shape.font) > 0 ? Number(shape.font) : CLOUD_DEFAULT_RADIUS;
+}
+
+function drawCloudBox(context, startX, startY, width, height, chosenRadius) {
     const x = Math.min(startX, startX + width);
     const y = Math.min(startY, startY + height);
     const w = Math.abs(width);
@@ -2034,7 +2507,11 @@ function drawCloudBox(context, startX, startY, width, height) {
         context.strokeRect(x, y, w, h);
         return;
     }
-    const radius = Math.max(6, Math.min(12, Math.min(w, h) / 4));
+    // O raio vem do campo "Raio" da faixa, mas nunca passa da metade do lado
+    // menor: senão o festonado engoliria a própria nuvem.
+    const radius = Number(chosenRadius) > 0
+        ? Math.max(3, Math.min(Number(chosenRadius), Math.min(w, h) / 2))
+        : Math.max(6, Math.min(12, Math.min(w, h) / 4));
     const stepsX = Math.max(1, Math.ceil(w / (radius * 2)));
     const stepsY = Math.max(1, Math.ceil(h / (radius * 2)));
     const stepW = w / stepsX;
@@ -2045,6 +2522,104 @@ function drawCloudBox(context, startX, startY, width, height) {
     for (let i = 0; i < stepsY; i++) context.quadraticCurveTo(x + w + radius, y + i * stepH + stepH / 2, x + w, y + (i + 1) * stepH);
     for (let i = 0; i < stepsX; i++) context.quadraticCurveTo(x + w - i * stepW - stepW / 2, y + h + radius, x + w - (i + 1) * stepW, y + h);
     for (let i = 0; i < stepsY; i++) context.quadraticCurveTo(x - radius, y + h - i * stepH - stepH / 2, x, y + h - (i + 1) * stepH);
+    context.stroke();
+}
+
+// Reamostra o traço livre em passos iguais: cada passo vira um festão. Se o
+// traço fechar perto de onde começou, o primeiro ponto entra de novo no fim
+// para o laço voltar ao começo.
+function resamplePath(points, step, closed) {
+    const path = points.slice();
+    if (closed) {
+        const first = path[0];
+        const last = path[path.length - 1];
+        if (first.x !== last.x || first.y !== last.y) path.push({x: first.x, y: first.y});
+    }
+    let total = 0;
+    for (let i = 1; i < path.length; i++) total += Math.hypot(path[i].x - path[i-1].x, path[i].y - path[i-1].y);
+    if (total <= 0) return [];
+    const count = Math.max(closed ? 6 : 2, Math.round(total / step));
+    const spacing = total / count;
+    const out = [path[0]];
+    let segment = 1;
+    let walked = 0;
+    for (let i = 1; i < count; i++) {
+        let remaining = spacing;
+        while (segment < path.length) {
+            const a = path[segment - 1];
+            const b = path[segment];
+            const length = Math.hypot(b.x - a.x, b.y - a.y);
+            if (walked + remaining <= length) {
+                walked += remaining;
+                const t = length ? walked / length : 0;
+                out.push({x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t});
+                remaining = 0;
+                break;
+            }
+            remaining -= (length - walked);
+            walked = 0;
+            segment++;
+        }
+        if (remaining > 0) break;
+    }
+    if (!closed) out.push(path[path.length - 1]);
+    return out;
+}
+
+// Terminou o traço perto de onde começou? Então a nuvem fecha. A tolerância sai
+// do tamanho do próprio traço, não do raio, para o festonado não abrir ou fechar
+// a figura quando o raio muda.
+function freeCloudIsClosed(points) {
+    if (points.length < 4) return false;
+    const xs = points.map(point => point.x);
+    const ys = points.map(point => point.y);
+    const diagonal = Math.hypot(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    const tolerance = Math.max(12, diagonal * 0.12);
+    const last = points[points.length - 1];
+    return Math.hypot(last.x - points[0].x, last.y - points[0].y) <= tolerance;
+}
+
+function drawFreeCloud(context, points, chosenRadius) {
+    if (!Array.isArray(points) || points.length < 3) {
+        drawSmoothStroke(context, points || []);
+        return;
+    }
+    const radius = Math.max(3, chosenRadius || CLOUD_DEFAULT_RADIUS);
+    const closed = freeCloudIsClosed(points);
+    const nodes = resamplePath(points, radius * 2, closed);
+    if (nodes.length < (closed ? 3 : 2)) {
+        drawSmoothStroke(context, points);
+        return;
+    }
+    // Contorno fechado: o sinal da área (fórmula do laço) diz onde é o "fora".
+    // Traço aberto: todos os festões estufam para o mesmo lado do risco.
+    let outward = 1;
+    if (closed) {
+        let area = 0;
+        for (let i = 0; i < nodes.length; i++) {
+            const a = nodes[i];
+            const b = nodes[(i + 1) % nodes.length];
+            area += a.x * b.y - b.x * a.y;
+        }
+        outward = area > 0 ? 1 : -1;
+    }
+    const arcs = closed ? nodes.length : nodes.length - 1;
+    context.beginPath();
+    context.moveTo(nodes[0].x, nodes[0].y);
+    for (let i = 0; i < arcs; i++) {
+        const a = nodes[i];
+        const b = nodes[(i + 1) % nodes.length];
+        const dx = b.x - a.x;
+        const dy = b.y - a.y;
+        const length = Math.hypot(dx, dy) || 1;
+        const bulge = radius * 1.35;
+        context.quadraticCurveTo(
+            (a.x + b.x) / 2 + (dy / length) * bulge * outward,
+            (a.y + b.y) / 2 + (-dx / length) * bulge * outward,
+            b.x, b.y
+        );
+    }
+    if (closed) context.closePath();
     context.stroke();
 }
 
@@ -2115,11 +2690,12 @@ function cropEdition(rect) {
 }
 
 function shiftAnnotation(shape, dx, dy) {
-    if ((shape.type === "Caneta" || shape.type === "MarcaTexto" || shape.type === "LinhaOrto") && Array.isArray(shape.points)) {
+    if (isPointShape(shape) && Array.isArray(shape.points)) {
         shape.points.forEach(point => {
             point.x += dx;
             point.y += dy;
         });
+        invalidateShapeBounds(shape);
         return;
     }
     shape.x += dx;
@@ -2208,31 +2784,54 @@ function drawCoveredArea(context, shape) {
     context.restore();
 }
 
+// Caixa de texto no comportamento do PowerPoint: o texto sempre reflui na
+// largura da caixa. Com o autoajuste ligado a caixa cresce em altura para caber
+// o texto; depois de arrastar uma alça de cima ou de baixo o autoajuste desliga
+// e passa a ser o texto que diminui até caber na altura escolhida.
+function textBoxLayout(context, shape) {
+    const nominal = Math.max(6, Number(shape.font) || 28);
+    const width = Math.max(20, Math.abs(shape.w || 0) - 8);
+    const style = `${shape.italic ? "italic " : ""}${shape.bold ? "bold " : ""}`;
+    const measure = size => {
+        context.font = `${style}${size}px 'Segoe UI'`;
+        return wrapText(context, shape.text, width);
+    };
+    let size = nominal;
+    let lines = measure(size);
+    if (shape.autoHeight === false) {
+        const room = Math.max(0, (Number(shape.h) || 0) - 8);
+        const floor = Math.max(6, nominal * 0.25);
+        let guard = 0;
+        while (size > floor && lines.length * size * 1.22 > room && guard++ < 160) {
+            size = Math.max(floor, size - Math.max(0.5, size * 0.06));
+            lines = measure(size);
+        }
+    }
+    context.font = `${style}${size}px 'Segoe UI'`;
+    return {size, lines, lineHeight: size * 1.22, height: lines.length * size * 1.22 + 8};
+}
+
 function drawTextBox(context, shape) {
-    const fontStyle = `${shape.italic ? "italic " : ""}${shape.bold ? "bold " : ""}${shape.font}px 'Segoe UI'`;
-    context.font = fontStyle;
+    const layout = textBoxLayout(context, shape);
     context.textAlign = "left";
     context.textBaseline = "top";
-    const lines = wrapText(context, shape.text, Math.max(20, shape.w - 8));
-    const lineHeight = shape.font * 1.22;
-    // Altura mínima = conteúdo (o texto NUNCA é cortado). Mas a caixa pode ser
-    // esticada manualmente para além do texto, deixando espaço em branco
-    // (equivale ao "Não Autoajustar" do PowerPoint). A largura continua
-    // ajustável e o texto reflui sozinho ao redimensionar.
-    const contentHeight = Math.max(shape.font * 1.4, lines.length * lineHeight + 8);
-    shape.h = Math.max(contentHeight, shape.h || 0);
+    shape.h = shape.autoHeight === false
+        ? Math.max(layout.size * 1.4, Number(shape.h) || 0)
+        : Math.max(layout.height, layout.size * 1.4);
     context.save();
     context.beginPath();
-    context.rect(shape.x, shape.y, shape.w, shape.h);
+    // Mesmo numa caixa apertada o texto não some: o recorte cresce se o conteúdo
+    // ainda passar da altura depois de reduzido até o limite.
+    context.rect(shape.x, shape.y, shape.w, Math.max(shape.h, layout.height));
     context.clip();
-    lines.forEach((line, index) => {
-        const y = shape.y + 4 + index * lineHeight;
+    layout.lines.forEach((line, index) => {
+        const y = shape.y + 4 + index * layout.lineHeight;
         context.fillText(line, shape.x + 4, y);
         if (shape.underline) {
             context.beginPath();
-            context.lineWidth = Math.max(1, shape.font / 14);
-            context.moveTo(shape.x + 4, y + shape.font * 1.05);
-            context.lineTo(shape.x + 4 + context.measureText(line).width, y + shape.font * 1.05);
+            context.lineWidth = Math.max(1, layout.size / 14);
+            context.moveTo(shape.x + 4, y + layout.size * 1.05);
+            context.lineTo(shape.x + 4 + context.measureText(line).width, y + layout.size * 1.05);
             context.stroke();
         }
     });
@@ -2259,13 +2858,47 @@ function wrapText(context, text, maxWidth) {
 }
 
 function balloonFontSize(shape) {
-    return Math.max(10, Math.round((Number(shape.font) || 28) * 0.72));
+    return Math.max(6, Math.round((Number(shape.font) || 28) * 0.72));
 }
 
 function balloonRadius(shape) {
     const fontSize = balloonFontSize(shape);
     const digits = Math.max(1, String(shape.text || "").length);
-    return Math.max(14, fontSize * 0.9, digits * fontSize * 0.38 + 8);
+    // Piso proporcional à fonte: com um piso fixo não dava para fazer balões
+    // pequenos, por menor que fosse o número escolhido na faixa.
+    return Math.max(fontSize * 0.9, digits * fontSize * 0.38 + fontSize * 0.6);
+}
+
+// Sequência tipo planilha: A -> B, Z -> AA, az -> ba.
+function nextAlphaText(text) {
+    const upper = text === text.toUpperCase();
+    const chars = text.toUpperCase().split("");
+    let index = chars.length - 1;
+    while (index >= 0) {
+        if (chars[index] !== "Z") {
+            chars[index] = String.fromCharCode(chars[index].charCodeAt(0) + 1);
+            break;
+        }
+        chars[index] = "A";
+        index -= 1;
+    }
+    if (index < 0) chars.unshift("A");
+    const next = chars.join("");
+    return upper ? next : next.toLowerCase();
+}
+
+// "1" -> "2", "09" -> "10", "A" -> "B", "R1" -> "R2", "Rev A" -> "Rev B".
+function nextSequenceText(value) {
+    const raw = String(value ?? "").trim();
+    if (!raw) return "";
+    const numeric = raw.match(/^(.*?)(\d+)$/);
+    if (numeric) {
+        const next = String(Number(numeric[2]) + 1);
+        return numeric[1] + (next.length < numeric[2].length ? next.padStart(numeric[2].length, "0") : next);
+    }
+    const alpha = raw.match(/^(.*?)([A-Za-z]+)$/);
+    if (alpha) return alpha[1] + nextAlphaText(alpha[2]);
+    return raw;
 }
 
 function balloonBadgePoint(shape) {
@@ -2282,7 +2915,7 @@ function drawBalloonBadge(context, shape) {
     const badgeX = badge.x;
     const badgeY = badge.y;
     if (shape.lineBalloon && (Math.abs(shape.w || 0) > 1 || Math.abs(shape.h || 0) > 1)) {
-        drawArrow(context, badgeX, badgeY, shape.x, shape.y, shape.thick);
+        drawArrow(context, badgeX, badgeY, shape.x, shape.y, shape.thick, fontSize);
     }
 
     context.beginPath();
@@ -2294,7 +2927,7 @@ function drawBalloonBadge(context, shape) {
     } else {
         context.fillStyle = "#FFFFFF";
         context.fill();
-        context.lineWidth = Math.max(2, shape.thick || 2);
+        context.lineWidth = Math.max(1.2, shape.thick || 2);
         context.strokeStyle = shape.color;
         context.stroke();
         context.fillStyle = shape.color;
@@ -2305,44 +2938,91 @@ function drawBalloonBadge(context, shape) {
     context.fillText(shape.text, badgeX, badgeY + 1);
 }
 
+// Piso proporcional (antes fixo em 26): assim o triângulo acompanha de verdade
+// o tamanho escolhido na faixa, inclusive nos valores pequenos.
 function reviewMarkerSize(shape) {
-    return Math.max(26, (Number(shape.font) || 28) * 1.35);
+    return Math.max(8, (Number(shape.font) || 28) * 1.3);
 }
 
 function reviewMarkerFontSize(shape) {
-    return Math.max(10, Math.round((Number(shape.font) || 28) * 0.56));
+    return Math.max(6, Math.round((Number(shape.font) || 28) * 0.56));
+}
+
+function reviewMarkerGeometry(shape) {
+    const size = reviewMarkerSize(shape);
+    const height = size * 0.9;
+    return {
+        size,
+        height,
+        topY: shape.y - height * 0.58,
+        bottomY: shape.y + height * 0.42,
+        leftX: shape.x - size / 2,
+        rightX: shape.x + size / 2
+    };
 }
 
 function drawReviewMarker(context, shape) {
-    const size = reviewMarkerSize(shape);
-    const height = size * 0.9;
-    const topY = shape.y - height * 0.58;
-    const leftX = shape.x - size / 2;
-    const rightX = shape.x + size / 2;
-    const bottomY = shape.y + height * 0.42;
+    const geometry = reviewMarkerGeometry(shape);
+    const filled = shape.fillReview === true;
 
     context.save();
     context.beginPath();
-    context.moveTo(shape.x, topY);
-    context.lineTo(rightX, bottomY);
-    context.lineTo(leftX, bottomY);
+    context.moveTo(shape.x, geometry.topY);
+    context.lineTo(geometry.rightX, geometry.bottomY);
+    context.lineTo(geometry.leftX, geometry.bottomY);
     context.closePath();
-    context.lineWidth = Math.max(2, shape.thick || 2);
+    if (filled) {
+        context.fillStyle = shape.color;
+        context.fill();
+    }
+    context.lineWidth = Math.max(1.2, shape.thick || 2);
     context.strokeStyle = shape.color;
     context.stroke();
-    context.fillStyle = shape.color;
+    context.fillStyle = filled ? "#FFFFFF" : shape.color;
     context.font = `${shape.bold === false ? "" : "bold "}${reviewMarkerFontSize(shape)}px 'Segoe UI'`;
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.fillText(String(shape.text || "R"), shape.x, shape.y + height * 0.08);
+    context.fillText(String(shape.text || "R"), shape.x, shape.y + geometry.height * 0.08);
     context.restore();
+}
+
+// Percorrer os pontos de um traço longo custa caro, e a caixa é pedida várias
+// vezes por quadro (alças, âncora, teste de clique). O resultado fica guardado
+// no próprio objeto; quem mexe nos pontos chama invalidateShapeBounds.
+function pointsBounds(shape, pad) {
+    const points = shape.points;
+    const cache = shape.boundsCache;
+    if (cache && cache.list === points && cache.count === points.length && cache.pad === pad) return cache.rect;
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (let index = 0; index < points.length; index++) {
+        const point = points[index];
+        if (point.x < minX) minX = point.x;
+        if (point.x > maxX) maxX = point.x;
+        if (point.y < minY) minY = point.y;
+        if (point.y > maxY) maxY = point.y;
+    }
+    const rect = {
+        x: minX - pad,
+        y: minY - pad,
+        w: Math.max(1, maxX + pad - (minX - pad)),
+        h: Math.max(1, maxY + pad - (minY - pad))
+    };
+    shape.boundsCache = {list: points, count: points.length, pad, rect};
+    return rect;
+}
+
+function invalidateShapeBounds(shape) {
+    if (shape) shape.boundsCache = null;
 }
 
 function annotationBounds(shape) {
     if (shape.type === "Revisao") {
-        const size = reviewMarkerSize(shape);
-        const height = size * 0.9;
-        return {x: shape.x - size / 2, y: shape.y - height * 0.58, w: size, h: height};
+        const geometry = reviewMarkerGeometry(shape);
+        return {x: geometry.leftX, y: geometry.topY, w: geometry.size, h: geometry.height};
+    }
+    if (isFreeCloud(shape) && Array.isArray(shape.points) && shape.points.length) {
+        // A nuvem livre estufa para fora do traço: a caixa cresce junto.
+        return pointsBounds(shape, cloudRadius(shape) * 1.4);
     }
     if (shape.type === "Balao") {
         const radius = balloonRadius(shape);
@@ -2355,17 +3035,23 @@ function annotationBounds(shape) {
         }
         return {x: shape.x - radius, y: shape.y - radius, w: radius * 2.3, h: radius * 2.05};
     }
+    if (shape.type === "Chamada") {
+        const base = normalizedRect(shape);
+        const rect = calloutTextRect(shape);
+        const x1 = Math.min(base.x, rect.x);
+        const y1 = Math.min(base.y, rect.y);
+        const x2 = Math.max(base.x + base.w, rect.x + rect.w);
+        const y2 = Math.max(base.y + base.h, rect.y + rect.h);
+        return {x: x1, y: y1, w: Math.max(1, x2 - x1), h: Math.max(1, y2 - y1)};
+    }
     if (labelTools.has(shape.type)) {
         let base = normalizedRect(shape);
-        if (shape.type === "CotaLivre" && Number(shape.extension || 0)) {
-            const endX = shape.x + shape.w;
-            const endY = shape.y + shape.h;
-            const angle = Math.atan2(shape.h, shape.w);
-            const perp = angle + Math.PI / 2;
-            const extX = Math.cos(perp) * Number(shape.extension || 0);
-            const extY = Math.sin(perp) * Number(shape.extension || 0);
-            const xs = [shape.x, endX, shape.x + extX, endX + extX];
-            const ys = [shape.y, endY, shape.y + extY, endY + extY];
+        if (shape.type === "CotaLivre") {
+            const info = dimensionInfo(shape);
+            const extX = info.perpX * info.extension;
+            const extY = info.perpY * info.extension;
+            const xs = [shape.x, info.endX, shape.x + extX, info.endX + extX];
+            const ys = [shape.y, info.endY, shape.y + extY, info.endY + extY];
             const x = Math.min(...xs);
             const y = Math.min(...ys);
             base = {x, y, w: Math.max(1, Math.max(...xs) - x), h: Math.max(1, Math.max(...ys) - y)};
@@ -2380,28 +3066,39 @@ function annotationBounds(shape) {
         const y2 = Math.max(base.y + base.h, labelRect.y + labelRect.h);
         return {x: x1, y: y1, w: Math.max(1, x2 - x1), h: Math.max(1, y2 - y1)};
     }
-    if ((shape.type === "Caneta" || shape.type === "MarcaTexto" || shape.type === "LinhaOrto") && Array.isArray(shape.points) && shape.points.length) {
-        const xs = shape.points.map(point => point.x);
-        const ys = shape.points.map(point => point.y);
-        const x = Math.min(...xs), y = Math.min(...ys);
-        return {x, y, w: Math.max(1, Math.max(...xs) - x), h: Math.max(1, Math.max(...ys) - y)};
+    if (isPointShape(shape) && Array.isArray(shape.points) && shape.points.length) {
+        return pointsBounds(shape, 0);
     }
     return normalizedRect(shape);
 }
 
 function drawSelection(shape) {
     const bounds = annotationBounds(shape);
+    // Tudo aqui é medido em pixels de tela: com o supersampling e o zoom, as
+    // alças precisam manter o mesmo tamanho aparente para continuarem clicáveis.
+    const inset = screenUnits(5);
     ctx.save();
     ctx.strokeStyle = "#F2A100";
-    ctx.lineWidth = 2;
-    ctx.setLineDash([7, 4]);
-    ctx.strokeRect(bounds.x - 5, bounds.y - 5, bounds.w + 10, bounds.h + 10);
+    ctx.lineWidth = screenUnits(1.6);
+    ctx.setLineDash([screenUnits(7), screenUnits(4)]);
+    ctx.strokeRect(bounds.x - inset, bounds.y - inset, bounds.w + inset * 2, bounds.h + inset * 2);
     ctx.setLineDash([]);
-    if (boxResizeTools.has(shape.type) || strokeResizeTools.has(shape.type)) {
+    if (boxResizeTools.has(shape.type) || strokeResizeTools.has(shape.type) || markerResizeTools.has(shape.type)) {
         drawResizeHandles(boxHandlePoints(shape));
     }
     if (lineResizeTools.has(shape.type)) {
         drawLineHandles(lineEndpointPoints(shape));
+    }
+    if (shape.type === "Chamada" && shape.text) {
+        const rect = calloutTextRect(shape);
+        const inset = screenUnits(2);
+        ctx.save();
+        ctx.strokeStyle = "#F2A100";
+        ctx.lineWidth = screenUnits(1);
+        ctx.setLineDash([screenUnits(4), screenUnits(3)]);
+        ctx.strokeRect(rect.x - inset, rect.y - inset, rect.w + inset * 2, rect.h + inset * 2);
+        ctx.restore();
+        drawResizeHandles(rectHandlePoints(rect));
     }
     if (shape.type === "CotaLivre") {
         drawDimensionGrips(shape);
@@ -2420,9 +3117,9 @@ function drawBalloonTipGrip(shape) {
     const point = balloonTipPoint(shape);
     ctx.fillStyle = "#F2A100";
     ctx.strokeStyle = "#FFFFFF";
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = screenUnits(1.5);
     ctx.beginPath();
-    ctx.arc(point.x, point.y, 5.5, 0, Math.PI * 2);
+    ctx.arc(point.x, point.y, screenUnits(5.5), 0, Math.PI * 2);
     ctx.fill();
     ctx.stroke();
 }
@@ -2430,7 +3127,7 @@ function drawBalloonTipGrip(shape) {
 function findBalloonTipGrip(shape, x, y) {
     if (!shape.lineBalloon || shape.type !== "Balao") return false;
     const point = balloonTipPoint(shape);
-    return Math.hypot(x - point.x, y - point.y) <= 13;
+    return Math.hypot(x - point.x, y - point.y) <= screenUnits(13);
 }
 
 function moveBalloonTip(shape, point) {
@@ -2441,20 +3138,33 @@ function moveBalloonTip(shape, point) {
     shape.h = badge.y - point.y;
 }
 
+// As alças da extensão ficam na ponta das linhas de chamada da cota, longe das
+// alças redondas das extremidades: uma muda o afastamento, a outra o tamanho.
 function dimensionGripPoints(shape) {
+    const info = dimensionInfo(shape);
     return [
-        {x: shape.x, y: shape.y},
-        {x: shape.x + shape.w, y: shape.y + shape.h}
+        {x: shape.x + info.perpX * info.extension, y: shape.y + info.perpY * info.extension},
+        {x: info.endX + info.perpX * info.extension, y: info.endY + info.perpY * info.extension}
     ];
 }
 
+function dimensionLabelBounds(shape) {
+    const label = labelPointForShape(shape);
+    const font = Number(shape.font) || 18;
+    const text = String(shape.text || "000");
+    const width = Math.max(42, text.length * font * 0.65);
+    const height = Math.max(20, font * 1.35);
+    return {x: label.x - width / 2, y: label.y - height / 2, w: width, h: height};
+}
+
 function drawDimensionGrips(shape) {
+    const size = screenUnits(10);
     ctx.fillStyle = "#F2A100";
     ctx.strokeStyle = "#FFFFFF";
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = screenUnits(1.5);
     dimensionGripPoints(shape).forEach(point => {
         ctx.beginPath();
-        ctx.rect(point.x - 5, point.y - 5, 10, 10);
+        ctx.rect(point.x - size / 2, point.y - size / 2, size, size);
         ctx.fill();
         ctx.stroke();
     });
@@ -2462,26 +3172,18 @@ function drawDimensionGrips(shape) {
 
 function findDimensionGrip(shape, x, y) {
     if (shape.type !== "CotaLivre") return -1;
-    return dimensionGripPoints(shape).findIndex(point => Math.abs(x - point.x) <= 12 && Math.abs(y - point.y) <= 12);
-}
-
-function createDimensionGripState(shape, gripIndex = 1) {
-    const p1 = {x: shape.x, y: shape.y};
-    const p2 = {x: shape.x + shape.w, y: shape.y + shape.h};
-    const dx = p2.x - p1.x;
-    const dy = p2.y - p1.y;
-    const length = Math.max(1, Math.hypot(dx, dy));
-    const unit = {x: dx / length, y: dy / length};
-    return {gripIndex, perp: {x: -unit.y, y: unit.x}};
+    const tolerance = screenUnits(12);
+    const index = dimensionGripPoints(shape).findIndex(point => Math.abs(x - point.x) <= tolerance && Math.abs(y - point.y) <= tolerance);
+    if (index >= 0) return index;
+    // Arrastar o próprio texto da cota também afasta ou aproxima as chamadas.
+    return pointInRect(x, y, dimensionLabelBounds(shape), screenUnits(6)) ? 2 : -1;
 }
 
 function extendDimensionCallout(shape, point) {
-    if (!dimensionGripState) dimensionGripState = createDimensionGripState(shape, 1);
-    const state = dimensionGripState;
-    const base = dimensionGripPoints(shape)[state.gripIndex] || {x: shape.x, y: shape.y};
-    const dx = point.x - base.x;
-    const dy = point.y - base.y;
-    const projected = dx * state.perp.x + dy * state.perp.y;
+    // Projeta o cursor na perpendicular da cota, medida a partir do meio: é a
+    // distância que as linhas de extensão avançam para fora do risco.
+    const info = dimensionInfo(shape);
+    const projected = (point.x - info.midX) * info.perpX + (point.y - info.midY) * info.perpY;
     shape.extension = Math.abs(projected) < 2 ? 0 : projected;
 }
 
@@ -2558,6 +3260,7 @@ function resizeStrokeShape(shape, corner, point) {
         if (affectX) p.x = anchorX + (p.x - anchorX) * sx;
         if (affectY) p.y = anchorY + (p.y - anchorY) * sy;
     });
+    invalidateShapeBounds(shape);
 }
 
 function resizeCircleCorner(shape, corner, point) {
@@ -2591,12 +3294,13 @@ function resizeLineShape(shape, corner, point) {
 }
 
 function drawResizeHandles(points) {
+    const size = screenUnits(9);
     ctx.fillStyle = "#FFFFFF";
     ctx.strokeStyle = "#F2A100";
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = screenUnits(1.5);
     points.forEach(point => {
         ctx.beginPath();
-        ctx.rect(point.x - 4.5, point.y - 4.5, 9, 9);
+        ctx.rect(point.x - size / 2, point.y - size / 2, size, size);
         ctx.fill();
         ctx.stroke();
     });
@@ -2607,27 +3311,54 @@ function drawResizeHandles(points) {
 function drawLineHandles(points) {
     ctx.fillStyle = "#FFFFFF";
     ctx.strokeStyle = "#F2A100";
-    ctx.lineWidth = 1.8;
+    ctx.lineWidth = screenUnits(1.8);
     points.forEach(point => {
         ctx.beginPath();
-        ctx.arc(point.x, point.y, 5.5, 0, Math.PI * 2);
+        ctx.arc(point.x, point.y, screenUnits(5.5), 0, Math.PI * 2);
         ctx.fill();
         ctx.stroke();
     });
 }
 
+// Escala o balão ou o triângulo de revisão a partir do centro: qualquer uma das
+// oito alças serve, como num retângulo.
+function resizeMarkerShape(shape, point) {
+    if (!markerResizeTools.has(shape.type)) return;
+    const center = shape.type === "Balao" ? balloonBadgePoint(shape) : {x: shape.x, y: shape.y};
+    const reach = Math.max(Math.abs(point.x - center.x), Math.abs(point.y - center.y));
+    const size = clampToolSize(shape.type, reach / (shape.type === "Balao" ? 0.65 : 0.68));
+    shape.font = size;
+    toolSizes[shape.type] = size;
+    byId("cfg-fonte").value = size;
+    syncEditionFormatControlsFromMain();
+}
+
 function findResizeHandle(shape, x, y) {
     if (boxResizeTools.has(shape.type) || strokeResizeTools.has(shape.type)) {
-        const found = boxHandlePoints(shape).find(point => Math.abs(x - point.x) <= 9 && Math.abs(y - point.y) <= 9);
+        const tolerance = screenUnits(9);
+        const found = boxHandlePoints(shape).find(point => Math.abs(x - point.x) <= tolerance && Math.abs(y - point.y) <= tolerance);
         if (found) return {handle: "box-resize", corner: found.code};
-    } else if (lineResizeTools.has(shape.type)) {
-        const found = lineEndpointPoints(shape).find(point => Math.abs(x - point.x) <= 13 && Math.abs(y - point.y) <= 13);
+    } else if (markerResizeTools.has(shape.type)) {
+        const tolerance = screenUnits(11);
+        const found = boxHandlePoints(shape).find(point => Math.abs(x - point.x) <= tolerance && Math.abs(y - point.y) <= tolerance);
+        if (found) return {handle: "marker-resize", corner: found.code};
+    }
+    if (shape.type === "Chamada" && shape.text) {
+        const tolerance = screenUnits(9);
+        const found = rectHandlePoints(calloutTextRect(shape))
+            .find(point => Math.abs(x - point.x) <= tolerance && Math.abs(y - point.y) <= tolerance);
+        if (found) return {handle: "callout-text", corner: found.code};
+    }
+    if (lineResizeTools.has(shape.type)) {
+        const tolerance = screenUnits(13);
+        const found = lineEndpointPoints(shape).find(point => Math.abs(x - point.x) <= tolerance && Math.abs(y - point.y) <= tolerance);
         if (found) return {handle: "line-resize", corner: found.code};
     }
     return null;
 }
 
 function resizeHandleCursor(corner) {
+    if (corner === "start" || corner === "end") return "crosshair";
     if (corner === "nw" || corner === "se") return "nwse-resize";
     if (corner === "ne" || corner === "sw") return "nesw-resize";
     if (corner === "n" || corner === "s") return "ns-resize";
@@ -2686,11 +3417,12 @@ function pointNearTriangle(x, y, ax, ay, bx, by, cx, cy, tolerance) {
 }
 
 function hitTolerance(shape) {
-    return Math.max(7, (Number(shape.thick) || 4) * 1.6);
+    return Math.max(screenUnits(7), (Number(shape.thick) || 4) * 1.6);
 }
 
 function shapeLabelRect(shape) {
     if (!shape.text || !labelTools.has(shape.type)) return null;
+    if (shape.type === "Chamada") return calloutTextRect(shape);
     const point = labelPointForShape(shape);
     const width = Math.max(26, String(shape.text).length * (shape.font || 18) * 0.62);
     const height = Math.max(18, (shape.font || 18) * 1.25);
@@ -2711,8 +3443,9 @@ function shapeHitsPoint(shape, x, y) {
             return distanceToSegment(x, y, shape.x, shape.y, endX, endY) <= tolerance;
         case "Chamada": {
             const direction = shape.w >= 0 ? 1 : -1;
+            const landing = calloutLanding(shape);
             return distanceToSegment(x, y, shape.x, shape.y, endX, endY) <= tolerance
-                || distanceToSegment(x, y, endX, endY, endX + 20 * direction, endY) <= tolerance;
+                || distanceToSegment(x, y, endX, endY, endX + landing * direction, endY) <= tolerance;
         }
         case "CotaLivre": {
             if (distanceToSegment(x, y, shape.x, shape.y, endX, endY) <= tolerance) return true;
@@ -2737,7 +3470,8 @@ function shapeHitsPoint(shape, x, y) {
         case "Retangulo":
             return pointNearRectBorder(x, y, normalizedRect(shape), tolerance);
         case "Nuvem":
-            return pointNearRectBorder(x, y, normalizedRect(shape), tolerance + 12);
+            if (isFreeCloud(shape)) return pointNearPolyline(shape.points, x, y, tolerance + cloudRadius(shape) * 1.4);
+            return pointNearRectBorder(x, y, normalizedRect(shape), tolerance + cloudRadius(shape) * 1.4);
         case "Circulo": {
             const rect = normalizedRect(shape);
             const rx = Math.max(1, rect.w / 2);
@@ -2762,13 +3496,12 @@ function shapeHitsPoint(shape, x, y) {
                 && distanceToSegment(x, y, shape.x, shape.y, badge.x, badge.y) <= tolerance;
         }
         case "Revisao": {
-            const size = reviewMarkerSize(shape);
-            const height = size * 0.9;
+            const geometry = reviewMarkerGeometry(shape);
             return pointNearTriangle(
                 x, y,
-                shape.x, shape.y - height * 0.58,
-                shape.x + size / 2, shape.y + height * 0.42,
-                shape.x - size / 2, shape.y + height * 0.42,
+                shape.x, geometry.topY,
+                geometry.rightX, geometry.bottomY,
+                geometry.leftX, geometry.bottomY,
                 tolerance
             );
         }
@@ -2777,11 +3510,23 @@ function shapeHitsPoint(shape, x, y) {
     }
 }
 
+// Folga máxima que algum teste usa nesta marcação. Serve para descartar de
+// imediato os traços longe do cursor, sem percorrer ponto a ponto.
+function hitPadding(shape) {
+    const tolerance = hitTolerance(shape);
+    if (shape.type === "MarcaTexto") return Math.max(tolerance, (shape.thick || 4) * 2.4);
+    if (shape.type === "Nuvem") return tolerance + cloudRadius(shape) * 1.4;
+    return Math.max(tolerance, 8, shape.thick || 4);
+}
+
 function collectAnnotationHits(x, y) {
     const exact = [];
     const loose = [];
     for (let index = annotations.length - 1; index >= 0; index--) {
         const shape = annotations[index];
+        // Só o traço à mão livre é caro de testar (percorre todos os pontos).
+        // Se o cursor está fora da caixa dele, nem vale entrar no teste exato.
+        if (isPointShape(shape) && !pointInRect(x, y, annotationBounds(shape), hitPadding(shape))) continue;
         if (shapeHitsPoint(shape, x, y)) {
             exact.push(index);
         } else if (pointInRect(x, y, annotationBounds(shape), Math.max(8, shape.thick || 4))) {
@@ -2796,10 +3541,13 @@ function findAnnotationAt(x, y, cycle = false) {
     if (selectedIndex >= 0 && annotations[selectedIndex]) {
         const shape = annotations[selectedIndex];
         if (findBalloonTipGrip(shape, x, y)) return {index: selectedIndex, handle: "balloon-tip"};
-        const gripIndex = findDimensionGrip(shape, x, y);
-        if (gripIndex >= 0) return {index: selectedIndex, handle: "dimension-grip", gripIndex};
+        // As alças das pontas vêm antes das alças de extensão: com a extensão
+        // em zero as duas ficam no mesmo lugar, e mudar o tamanho é o gesto
+        // mais provável.
         const resizeHit = findResizeHandle(shape, x, y);
         if (resizeHit) return {index: selectedIndex, handle: resizeHit.handle, corner: resizeHit.corner};
+        const gripIndex = findDimensionGrip(shape, x, y);
+        if (gripIndex >= 0) return {index: selectedIndex, handle: "dimension-grip", gripIndex};
     }
 
     const candidates = collectAnnotationHits(x, y);
@@ -2823,7 +3571,7 @@ function findAnnotationAt(x, y, cycle = false) {
 }
 
 function annotationAnchor(shape) {
-    if (shape.type === "Caneta" || shape.type === "MarcaTexto" || shape.type === "LinhaOrto") {
+    if (isPointShape(shape)) {
         const bounds = annotationBounds(shape);
         return {x: bounds.x, y: bounds.y};
     }
@@ -2834,8 +3582,9 @@ function moveAnnotation(shape, newX, newY) {
     const anchor = annotationAnchor(shape);
     const dx = newX - anchor.x;
     const dy = newY - anchor.y;
-    if ((shape.type === "Caneta" || shape.type === "MarcaTexto" || shape.type === "LinhaOrto") && Array.isArray(shape.points)) {
+    if (isPointShape(shape) && Array.isArray(shape.points)) {
         shape.points.forEach(point => { point.x += dx; point.y += dy; });
+        invalidateShapeBounds(shape);
     } else {
         shape.x += dx;
         shape.y += dy;
@@ -2931,7 +3680,7 @@ function restoreState(state) {
     isDrawing = false;
     preview = null;
     startPoint = null;
-    currentPoints = [];
+    clearStroke();
     if (workspaceMode === "edition") {
         annotations = editionAnnotations;
         ensureEditionCanvas();
@@ -3139,8 +3888,11 @@ function screenPixelRatio() {
     // Com a tela do Windows em 125%/150%, cada pixel do CSS vale mais de um
     // pixel de verdade; sem isto o desenho seria ampliado pelo sistema e o
     // traço voltaria a ficar serrilhado.
+    // Acima disso o canvas ainda é rasterizado com sobra (RENDER_OVERSAMPLE) e
+    // reduzido pelo navegador: é essa redução que apaga o serrilhado das bordas
+    // da caneta, do marca-texto e de todas as marcações.
     const ratio = Number(window.devicePixelRatio) || 1;
-    return Math.min(3, Math.max(1, ratio));
+    return Math.min(4, Math.max(RENDER_OVERSAMPLE, ratio));
 }
 
 function applyZoom() {

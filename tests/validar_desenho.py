@@ -144,10 +144,12 @@ def main():
         })()""")
         js("document.querySelector('.ribbon-tab[onclick*=tab-edicao]').click()")
         check("workspaceMode === 'edition'")
-        check("document.querySelectorAll('.stroke-menu-trigger').length === 4")
+        # Caneta, marca-texto e nuvem de revisao, nas duas guias.
+        check("document.querySelectorAll('.stroke-menu-trigger').length === 6")
         js("document.querySelectorAll('[data-color-picker]')[1].click()")
         check("!byId('drawing-color-popover').hidden")
-        for width, height in ((1100, 720), (1600, 900)):
+        # A primeira largura e o tamanho minimo da janela, onde a faixa ja cabe inteira.
+        for width, height in ((capture.RIBBON_MIN_WIDTH, 720), (1600, 900)):
             window.resize(width, height)
             QTest.qWait(120)
             js("document.querySelectorAll('[data-color-picker]')[1].scrollIntoView(); document.querySelectorAll('[data-color-picker]')[1].click()")

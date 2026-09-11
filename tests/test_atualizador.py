@@ -171,6 +171,58 @@ class UpdateTests(unittest.TestCase):
         self.assert_personal_unchanged()
 
     @unittest.skipUnless(sys.platform == "win32", "Windows process locking")
+    def test_multiple_apps_and_exclusive_update_reservation(self):
+        first = updater.AppInstance(self.target)
+        second = updater.AppInstance(self.target)
+        third = updater.AppInstance(self.target)
+        installer = updater.InstanceLock(self.target)
+        try:
+            self.assertTrue(first.acquire())
+            self.assertTrue(second.acquire())
+            self.assertEqual(updater.running_instances(self.target), 2)
+            self.assertFalse(installer.acquire())
+            self.assertFalse(first.reserve_update())
+            second.release()
+            self.assertFalse(installer.acquire())
+            self.assertTrue(first.reserve_update())
+            self.assertFalse(third.acquire())
+            first.cancel_update()
+            self.assertTrue(third.acquire())
+            first.release()
+            third.release()
+            self.assertTrue(installer.acquire())
+            self.assertFalse(second.acquire())
+        finally:
+            for lock in (first, second, third, installer):
+                lock.release()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows process locking")
+    def test_crashed_app_does_not_leave_a_false_live_instance(self):
+        script = (
+            "import sys; from pathlib import Path; from atualizador import AppInstance; "
+            "instance=AppInstance(Path(sys.argv[1])); assert instance.acquire(); "
+            "print('ready',flush=True); sys.stdin.read()"
+        )
+        process = subprocess.Popen([sys.executable, "-c", script, str(self.target)],
+                                   cwd=ROOT, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                   creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        try:
+            self.assertEqual(process.stdout.readline().strip(), b"ready")
+            self.assertEqual(updater.running_instances(self.target), 1)
+            process.terminate()
+            process.wait(timeout=10)
+            self.assertEqual(updater.running_instances(self.target), 0)
+            installer = updater.InstanceLock(self.target)
+            self.assertTrue(installer.acquire())
+            installer.release()
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                process.wait(timeout=10)
+            process.stdin.close()
+            process.stdout.close()
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows process locking")
     def test_real_helper_waits_for_app_and_restarts_new_version(self):
         import shutil
         # A harmless app stub records the restarted version instead of opening a window.
@@ -184,10 +236,10 @@ class UpdateTests(unittest.TestCase):
         shutil.copy2(archive, local_archive)
         shutil.copy2(ROOT / "atualizador.py", self.target / "atualizador.py")
         release = updater.Release("7.1.1", "calavort/super-captura", "", updater.sha256(local_archive), local_archive.stat().st_size)
-        lock = updater.InstanceLock(self.target)
+        lock = updater.AppInstance(self.target)
         self.assertTrue(lock.acquire())
-        second_lock = updater.InstanceLock(self.target)
-        self.assertFalse(second_lock.acquire())
+        second_lock = updater.AppInstance(self.target)
+        self.assertTrue(second_lock.acquire())
         process = updater.start_installer(updater.prepare_installer(local_archive, self.target, release))
         try:
             deadline = time.monotonic() + 10
@@ -196,6 +248,10 @@ class UpdateTests(unittest.TestCase):
             self.assertTrue((state / "instalador-pronto").exists())
             self.assertEqual(updater.read_version(self.target)["version"], "7.1.0")
             lock.release()
+            time.sleep(.3)
+            self.assertIsNone(process.poll())
+            self.assertEqual(updater.read_version(self.target)["version"], "7.1.0")
+            second_lock.release()
             self.assertEqual(process.wait(timeout=20), 0)
             deadline = time.monotonic() + 10
             while not (self.target / "reiniciado.txt").exists() and time.monotonic() < deadline:
@@ -205,6 +261,7 @@ class UpdateTests(unittest.TestCase):
             self.assert_personal_unchanged()
         finally:
             lock.release()
+            second_lock.release()
             if process.poll() is None:
                 process.terminate()
                 process.wait(timeout=10)
