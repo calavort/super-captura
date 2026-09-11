@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import app as capture
-import atualizador_ui
+from atualizacao import atualizador_ui
 from atualizacao.atualizador import APP_FILES, AppInstance, Release, read_version, version_tuple
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtTest import QTest
