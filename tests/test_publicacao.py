@@ -6,7 +6,9 @@ import urllib.error
 from pathlib import Path
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+sys.path.insert(0, str(ROOT / "ferramentas"))
 
 import publicar_release as publisher
 from atualizador import APP_ID, UpdateError, sha256, write_json

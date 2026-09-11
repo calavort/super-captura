@@ -100,19 +100,19 @@ git credential-manager github login --username calavort --browser
 Primeiro release (cria o repositorio publico caso ainda nao exista):
 
 ```powershell
-python publicar_release.py --publicar --criar-repositorio
+python ferramentas/publicar_release.py --publicar --criar-repositorio
 ```
 
 Para as proximas alteracoes, aumente a versao:
 
 ```powershell
-python publicar_release.py --versao 7.1.1 --publicar
+python ferramentas/publicar_release.py --versao 7.1.1 --publicar
 ```
 
 Para gerar somente o ZIP local, sem publicar:
 
 ```powershell
-python publicar_release.py --versao 7.1.1
+python ferramentas/publicar_release.py --versao 7.1.1
 ```
 
 O script gera os arquivos em `dist`, cria um release como rascunho, envia o
