@@ -507,8 +507,14 @@ function applyCurrentFormattingToSelection() {
     pushHistory();
     shape.color = options.color;
     shape.thick = options.thick;
-    if (isTextEditable(shape)) {
+    // O campo de tamanho da faixa vale para toda marcação que o usa — fonte,
+    // ponta da seta e raio do festonado da nuvem. Antes só o texto respondia, e
+    // a nuvem já desenhada ficava presa ao raio com que nasceu.
+    if (toolSizes[shape.type] !== undefined) {
         shape.font = options.font;
+        invalidateShapeBounds(shape);
+    }
+    if (isTextEditable(shape)) {
         shape.bold = options.bold;
         shape.italic = options.italic;
         shape.underline = options.underline;
@@ -1557,7 +1563,7 @@ function finalizeTextEditor(commit = true, switchToMover = true) {
             edited.text = text;
             if (edited.type === "Chamada") {
                 edited.textW = Math.max(40, editorRect.width * docWidth / Math.max(1, canvasRect.width));
-                if (edited.autoHeight === false) {
+                if (calloutFixedHeight(edited)) {
                     edited.textH = Math.max(16, editorRect.height * docHeight / Math.max(1, canvasRect.height));
                 }
             }
@@ -2389,6 +2395,14 @@ function calloutTextWidth(shape) {
     return Math.max(40, Number(shape.textW) || Math.max(240, (Number(shape.font) || 24) * 9));
 }
 
+// A chamada só passa a encolher o texto depois que a altura dela foi fixada à
+// mão (alça de cima ou de baixo). O autoajuste geral da ferramenta Texto não
+// vale aqui: sem altura gravada não existe espaço para caber, e a fonte pedida
+// acabava reduzida até o mínimo — a chamada saía com letra minúscula.
+function calloutFixedHeight(shape) {
+    return shape.autoHeight === false && Number(shape.textH) > 0;
+}
+
 // O texto da chamada usa a mesma máquina da ferramenta Texto: reflui na largura
 // da caixa e, quando a altura é fixada à mão, diminui até caber nela.
 function calloutTextLayout(context, shape) {
@@ -2399,7 +2413,7 @@ function calloutTextLayout(context, shape) {
         font: shape.font,
         bold: shape.bold,
         italic: shape.italic,
-        autoHeight: shape.autoHeight
+        autoHeight: !calloutFixedHeight(shape)
     });
 }
 
@@ -2408,7 +2422,7 @@ function calloutTextRect(shape, layout = null) {
     const measured = layout || calloutTextLayout(measuringContext(), shape);
     const dir = shape.w >= 0 ? 1 : -1;
     const width = calloutTextWidth(shape);
-    const height = shape.autoHeight === false
+    const height = calloutFixedHeight(shape)
         ? Math.max(measured.size * 1.4, Number(shape.textH) || 0)
         : measured.height;
     const endX = shape.x + (shape.w || 0);
@@ -2798,8 +2812,10 @@ function textBoxLayout(context, shape) {
     };
     let size = nominal;
     let lines = measure(size);
-    if (shape.autoHeight === false) {
-        const room = Math.max(0, (Number(shape.h) || 0) - 8);
+    const room = Math.max(0, (Number(shape.h) || 0) - 8);
+    // Sem altura útil gravada não há caixa para caber: reduzir aqui derrubaria o
+    // texto até o piso, ignorando o tamanho pedido na faixa.
+    if (shape.autoHeight === false && room > 0) {
         const floor = Math.max(6, nominal * 0.25);
         let guard = 0;
         while (size > floor && lines.length * size * 1.22 > room && guard++ < 160) {
