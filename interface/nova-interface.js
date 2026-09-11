@@ -28,6 +28,8 @@ const strokeWidths = {Caneta: 4, MarcaTexto: 16};
 // ferramenta ativa: fonte do texto e das cotas, diametro do balao, altura do
 // triangulo de revisao, ponta da seta e raio do festonado da nuvem.
 const toolSizes = {Texto: 28, Chamada: 24, CotaLivre: 22, CotaAngulo: 22, Seta: 22, Balao: 28, Revisao: 28, Nuvem: 9};
+// A setinha dos menus: o mesmo triângulo cheio dos seletores do programa.
+const CARET_SVG = '<svg class="caret-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg>';
 const sizeLabels = {Texto: "Fonte", Chamada: "Fonte", CotaLivre: "Fonte", CotaAngulo: "Fonte", Seta: "Ponta", Balao: "Balão", Revisao: "Triângulo", Nuvem: "Raio"};
 let recentColors = [];
 let activeFormatPopover = null;
@@ -45,8 +47,10 @@ const strokeResizeTools = new Set(["Caneta", "MarcaTexto"]);
 // desenhadas da para mudar comprimento e angulo sem refazer a marcacao.
 const lineResizeTools = new Set(["Linha", "Seta", "Chamada", "CotaLivre", "CotaAngulo"]);
 // Quem se beneficia de ficar exatamente na horizontal ou na vertical. A cota é
-// o caso que mais pede: uma medida tem que sair reta, e na mão nunca sai.
-const axisSnapTools = new Set(["Linha", "Seta", "Chamada", "CotaLivre"]);
+// o caso que mais pede: uma medida tem que sair reta, e na mão nunca sai. Na
+// cota de ângulo, encaixar nos eixos a partir do vértice é o mesmo que travar
+// em 90, 180, 270 e 360 graus.
+const axisSnapTools = new Set(["Linha", "Seta", "Chamada", "CotaLivre", "CotaAngulo"]);
 // Balao e triangulo de revisao: qualquer uma das oito alcas escala a marcacao
 // inteira a partir do centro.
 const markerResizeTools = new Set(["Balao", "Revisao"]);
@@ -62,6 +66,8 @@ let cloudFreeMode = false;
 // Balão e triângulo avançam o número sozinhos a cada marcação. Desligado pelo
 // menu da própria ferramenta, o valor digitado fica fixo e repete.
 let autoSequence = {Balao: true, Revisao: true};
+// Ferramenta do menu aberto: quem mexe na faixa precisa redesenhar o menu.
+let openToolConfig = null;
 let workspaceMode = "home";
 let homeBgImage = null;
 let homeAnnotations = annotations;
@@ -576,7 +582,9 @@ function handleFormatControlChanged() {
         byId("cfg-fonte").value = size;
     }
     if (byId("cfg-nuvem-livre")) cloudFreeMode = byId("cfg-nuvem-livre").checked;
-    if (activeFormatPopover && activeFormatPopover.id === "cloud-options-popover") renderCloudMenu(activeFormatPopover);
+    if (activeFormatPopover && activeFormatPopover.id === "tool-config-popover" && openToolConfig) {
+        renderToolConfigMenu(activeFormatPopover, openToolConfig);
+    }
     syncEditionFormatControlsFromMain();
     if (applyCurrentFormattingToActiveEditor()) {
         persistPreferences();
@@ -1011,6 +1019,7 @@ function closeFormatPopover(restoreFocus = false) {
     }
     activeFormatPopover = null;
     formatPopoverAnchor = null;
+    openToolConfig = null;
 }
 
 function positionFormatPopover() {
@@ -1168,7 +1177,7 @@ function initializeDrawingPickers() {
         const tool = toolButton.dataset.tool;
         const marker = tool === "MarcaTexto";
         button.className = "stroke-menu-trigger";
-        button.textContent = "⌄";
+        button.innerHTML = CARET_SVG;
         button.title = `Espessura ${marker ? "do marca-texto" : "da caneta"}`;
         button.setAttribute("aria-label", button.title);
         button.setAttribute("aria-expanded", "false");
@@ -1192,36 +1201,6 @@ function initializeDrawingPickers() {
             openFormatPopover(thickness, button);
         };
     });
-    // Menu da nuvem de revisão, no mesmo lugar em que a caneta e o marca-texto
-    // têm o deles: raio do festonado e traço retangular ou à mão livre.
-    const cloudMenu = document.createElement("section");
-    cloudMenu.id = "cloud-options-popover";
-    cloudMenu.className = "format-popover";
-    cloudMenu.hidden = true;
-    cloudMenu.setAttribute("role", "dialog");
-    cloudMenu.setAttribute("aria-label", "Nuvem de revisão");
-    document.body.append(cloudMenu);
-    document.querySelectorAll('.tool-btn[data-tool="Nuvem"]').forEach(toolButton => {
-        const wrapper = document.createElement("div");
-        wrapper.className = "stroke-tool";
-        toolButton.before(wrapper);
-        wrapper.append(toolButton);
-        const button = document.createElement("button");
-        button.className = "stroke-menu-trigger";
-        button.textContent = "⌄";
-        button.title = "Opções da nuvem de revisão";
-        button.setAttribute("aria-label", button.title);
-        button.setAttribute("aria-expanded", "false");
-        wrapper.append(button);
-        button.onclick = () => {
-            if (activeFormatPopover === cloudMenu && formatPopoverAnchor === button) return closeFormatPopover();
-            const editingSelection = annotations[selectedIndex]?.type === "Nuvem";
-            if (!editingSelection) { finishActiveCommand(true); selectTool("Nuvem"); }
-            renderCloudMenu(cloudMenu);
-            openFormatPopover(cloudMenu, button);
-        };
-    });
-
     buildToolConfigMenus();
 
     document.addEventListener("mousedown", event => {
@@ -1240,48 +1219,6 @@ function beginStroke(point) {
 function clearStroke() {
     currentPoints = [];
     currentSmooth = [];
-}
-
-// O menu se redesenha a cada escolha para os botões refletirem o estado atual.
-function renderCloudMenu(popover) {
-    const selecionada = annotations[selectedIndex]?.type === "Nuvem" ? annotations[selectedIndex] : null;
-    const livre = selecionada ? isFreeCloud(selecionada) : cloudFreeMode;
-    const raio = selecionada ? cloudRadius(selecionada) : toolSizes.Nuvem;
-    popover.innerHTML = `<div class="picker-heading">Nuvem de revisão<button class="picker-close" aria-label="Fechar">×</button></div>
-        <span class="picker-label">Traço</span>
-        <div class="option-choices">
-            <button class="option-choice" data-cloud="box" aria-pressed="${!livre}">
-                <span class="material-symbols-outlined">crop_square</span><span>Retangular</span></button>
-            <button class="option-choice" data-cloud="free" aria-pressed="${livre}">
-                <span class="material-symbols-outlined">gesture</span><span>À mão livre</span></button>
-        </div>
-        <span class="picker-label">Raio do festonado</span>
-        <div class="stroke-choices"></div>
-        <span class="picker-label">Outros valores: campo Raio na faixa.</span>`;
-    popover.querySelector(".picker-close").onclick = () => closeFormatPopover(true);
-    popover.querySelectorAll("[data-cloud]").forEach(choice => {
-        choice.onclick = () => {
-            applyCloudFreeMode(choice.dataset.cloud === "free");
-            renderCloudMenu(popover);
-            positionFormatPopover();
-        };
-    });
-    const choices = popover.querySelector(".stroke-choices");
-    [5, 7, 9, 12, 16, 22, 30].forEach(valor => {
-        const choice = document.createElement("button");
-        choice.className = "stroke-choice";
-        choice.setAttribute("aria-label", `Raio ${valor} pixels`);
-        choice.setAttribute("aria-pressed", String(raio === valor));
-        // A amostra comprime a escala do raio para caber na altura da linha.
-        choice.innerHTML = `<span class="cloud-sample" style="--cloud-radius:${(3 + valor * 0.33).toFixed(1)}px"></span><span>${valor} px</span>`;
-        choice.onclick = () => {
-            byId("cfg-fonte").value = valor;
-            handleFormatControlChanged();
-            renderCloudMenu(popover);
-            positionFormatPopover();
-        };
-        choices.append(choice);
-    });
 }
 
 // Vale para as próximas nuvens e, se houver uma selecionada, também para ela.
@@ -1332,8 +1269,12 @@ const toolConfigMenus = {
     CotaAngulo: {title: "Cota de ângulo", size: true},
     Texto: {title: "Texto", size: true},
     Balao: {title: "Balão numerado", size: true, fill: "balao", text: "Balao"},
-    Revisao: {title: "Triângulo de revisão", size: true, fill: "revisao", text: "Revisao"}
+    Revisao: {title: "Triângulo de revisão", size: true, fill: "revisao", text: "Revisao"},
+    Nuvem: {title: "Nuvem de revisão", size: true, cloud: true}
 };
+
+// Cada ferramenta tem a sua faixa de valores; a nuvem é a única diferente.
+const toolConfigLimits = {Nuvem: {min: 3, max: 60}};
 
 function buildToolConfigMenus() {
     const popover = document.createElement("section");
@@ -1351,7 +1292,7 @@ function buildToolConfigMenus() {
             wrapper.append(toolButton);
             const trigger = document.createElement("button");
             trigger.className = "stroke-menu-trigger";
-            trigger.textContent = "\u2304";
+            trigger.innerHTML = CARET_SVG;
             trigger.title = "Opções: " + toolConfigMenus[tool].title;
             trigger.setAttribute("aria-label", trigger.title);
             trigger.setAttribute("aria-expanded", "false");
@@ -1361,6 +1302,7 @@ function buildToolConfigMenus() {
                 // Abrir o menu já escolhe a ferramenta, a não ser que a marcação
                 // selecionada seja dela — aí o menu edita o que está selecionado.
                 if (annotations[selectedIndex]?.type !== tool) { finishActiveCommand(true); selectTool(tool); }
+                openToolConfig = tool;
                 renderToolConfigMenu(popover, tool);
                 openFormatPopover(popover, trigger);
             };
@@ -1400,6 +1342,7 @@ function toolConfigNextHint(chave, atual) {
 function renderToolConfigMenu(popover, tool) {
     const config = toolConfigMenus[tool];
     const rotulo = sizeLabels[tool] || "Tamanho";
+    const limites = toolConfigLimits[tool] || {min: 8, max: 200};
     popover.setAttribute("aria-label", config.title);
 
     let html = '<div class="picker-heading">' + config.title
@@ -1407,12 +1350,14 @@ function renderToolConfigMenu(popover, tool) {
     if (config.size) {
         html += '<span class="picker-label">' + rotulo + '</span>'
             + '<div class="config-size-row">'
-            + '<input class="config-size" type="number" min="8" max="200" step="1" value="'
-            + toolConfigSize(tool) + '" aria-label="' + rotulo + '">'
+            + '<input class="config-size" type="number" min="' + limites.min + '" max="'
+            + limites.max + '" step="1" value="' + toolConfigSize(tool)
+            + '" aria-label="' + rotulo + '">'
             + '<span class="config-stepper">'
             + '<button type="button" data-step="1" tabindex="-1" aria-label="Aumentar">&#9650;</button>'
             + '<button type="button" data-step="-1" tabindex="-1" aria-label="Diminuir">&#9660;</button>'
-            + '</span><span class="config-hint">8 a 200</span></div>';
+            + '</span><span class="config-hint">' + limites.min + ' a ' + limites.max
+            + '</span></div>';
     }
     if (config.fill) {
         const cheio = toolConfigFilled(tool);
@@ -1422,6 +1367,18 @@ function renderToolConfigMenu(popover, tool) {
             + '<span class="config-shape ' + config.fill + ' solid"></span><span>Sólido</span></button>'
             + '<button class="option-choice" data-fill="outline" aria-pressed="' + (!cheio) + '">'
             + '<span class="config-shape ' + config.fill + ' outline"></span><span>Vazado</span></button></div>';
+    }
+    if (config.cloud) {
+        const livre = annotations[selectedIndex]?.type === "Nuvem"
+            ? isFreeCloud(annotations[selectedIndex]) : cloudFreeMode;
+        html += '<span class="picker-label">Traço</span>'
+            + '<div class="option-choices" role="group" aria-label="Traço da nuvem">'
+            + '<button class="option-choice" data-cloud="box" aria-pressed="' + (!livre) + '">'
+            + '<span class="material-symbols-outlined">crop_square</span><span>Retangular</span></button>'
+            + '<button class="option-choice" data-cloud="free" aria-pressed="' + livre + '">'
+            + '<span class="material-symbols-outlined">gesture</span><span>À mão livre</span></button></div>'
+            + '<div class="config-hint" style="margin-top:8px">À mão livre, termine o risco'
+            + ' perto do início para fechar a nuvem.</div>';
     }
     if (config.text) {
         const atual = String(byId("cfg-numero").value || "1");
@@ -1448,6 +1405,13 @@ function renderToolConfigMenu(popover, tool) {
             };
         });
     }
+    popover.querySelectorAll("[data-cloud]").forEach(escolha => {
+        escolha.onclick = () => {
+            applyCloudFreeMode(escolha.dataset.cloud === "free");
+            renderToolConfigMenu(popover, tool);
+            positionFormatPopover();
+        };
+    });
     popover.querySelectorAll("[data-fill]").forEach(escolha => {
         escolha.onclick = () => {
             const alvo = byId(tool === "Balao" ? "cfg-balao-fill" : "cfg-revisao-fill");
@@ -3121,8 +3085,6 @@ function drawBalloonBadge(context, shape) {
         context.fill();
         context.fillStyle = "#FFFFFF";
     } else {
-        context.fillStyle = "#FFFFFF";
-        context.fill();
         context.lineWidth = Math.max(1.2, shape.thick || 2);
         context.strokeStyle = shape.color;
         context.stroke();

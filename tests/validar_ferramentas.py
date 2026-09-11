@@ -395,24 +395,27 @@ def main():
 
         # --- menu proprio da nuvem, como no Notas de Engenharia ---
         check("""(() => {
-            const gatilhos = document.querySelectorAll('.stroke-tool .stroke-menu-trigger');
-            const nuvem = [...gatilhos].find(b => b.title.includes('nuvem'));
+            const nuvem = document.querySelector('.tool-btn[data-tool="Nuvem"] + .stroke-menu-trigger');
             if (!nuvem) return false;
             nuvem.click();
-            const menu = byId('cloud-options-popover');
+            const menu = byId('tool-config-popover');
             const caixa = menu.getBoundingClientRect();
             const opcoes = menu.querySelectorAll('[data-cloud]');
-            const raios = menu.querySelectorAll('.stroke-choice');
-            if (menu.hidden || caixa.width === 0 || opcoes.length !== 2 || raios.length < 5) return false;
+            // O raio e digitado, na faixa propria da nuvem (3 a 60).
+            const campo = menu.querySelector('.config-size');
+            if (menu.hidden || caixa.width === 0 || opcoes.length !== 2 || !campo) return false;
+            if (campo.min !== '3' || campo.max !== '60') return false;
             if (caixa.right > innerWidth || caixa.bottom > innerHeight) return false;
+            campo.value = 41; campo.dispatchEvent(new Event('input'));
+            const raioDigitado = toolSizes.Nuvem === 41;
             menu.querySelector('[data-cloud=free]').click();
             const virouLivre = cloudFreeMode === true && byId('cfg-nuvem-livre').checked === true;
-            byId('cloud-options-popover').querySelector('[data-cloud=box]').click();
+            byId('tool-config-popover').querySelector('[data-cloud=box]').click();
             const voltou = cloudFreeMode === false;
             closeFormatPopover();
-            return virouLivre && voltou && currentTool === 'Nuvem';
+            return raioDigitado && virouLivre && voltou && currentTool === 'Nuvem';
         })()""")
-        print("OK: nuvem de revisao com menu proprio de traco e raio")
+        print("OK: nuvem de revisao com raio digitado e escolha do traco")
 
         # --- fluidez: o custo por evento do mouse nao cresce com o traco ---
         check("""(() => {
