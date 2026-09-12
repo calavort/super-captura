@@ -101,6 +101,10 @@ let exportCtx = null;
 // Cópia da imagem de fundo já reduzida, usada quando o zoom é bem pequeno.
 let bgProxyCanvas = null;
 let bgProxySource = null;
+// A imagem capturada tambem aceita transparencia e um quarto de volta. Ela nao
+// e uma marcacao - nao da para seleciona-la - entao o alvo e ela quando nao ha
+// nada selecionado na Pagina Inicial.
+let bgOpacity = 1;
 let bgProxyWidth = 0;
 let resizeCorner = null;
 // Histórico de desfazer/refazer (Ctrl+Z / Ctrl+Y).
@@ -201,6 +205,7 @@ function serializeUpdateSession() {
             editionAnnotations: state.editionAnnotations,
             editionCanvasSize: state.editionCanvasSize,
             bgImage: imageData(state.bgImage),
+            bgOpacity: state.bgOpacity,
             editionItems: state.editionItems.map(item => {
                 const {image, source, ...rest} = item;
                 return {...rest, source: imageData(image)};
@@ -222,6 +227,7 @@ async function restoreUpdateSession(state) {
             image.src = source;
         });
         const restored = {...state, bgImage: await load(state.bgImage)};
+        restored.bgOpacity = Number.isFinite(state.bgOpacity) ? state.bgOpacity : 1;
         restored.editionItems = await Promise.all(state.editionItems.map(async item => ({
             ...item, image: await load(item.source)
         })));
@@ -814,6 +820,7 @@ function loadImageData(dataUrl, autoCopy = false, autoSave = false) {
         pushHistory();
         bgImage = image;
         homeBgImage = image;
+        bgOpacity = 1;
         docWidth = image.naturalWidth;
         docHeight = image.naturalHeight;
         annotations = [];
@@ -1609,12 +1616,78 @@ function selectedElement() {
     return selectedIndex >= 0 ? annotations[selectedIndex] || null : null;
 }
 
+// Sem nada selecionado na Pagina Inicial, quem recebe o ajuste e a captura.
+function backgroundIsTarget() {
+    return workspaceMode === "home" && Boolean(bgImage) && !selectedElement();
+}
+
+function applyBackgroundOpacity(valor) {
+    if (!bgImage) return false;
+    pushHistory();
+    bgOpacity = Math.max(0.05, Math.min(1, Number(valor) || 0));
+    redraw();
+    scheduleClipboardSync();
+    setStatus(`Transparência da imagem: ${Math.round((1 - bgOpacity) * 100)}%.`);
+    return true;
+}
+
+// Um quarto de volta de cada vez, e so: um angulo livre deixaria a folha com
+// quinas vazias e mudaria o tamanho dela a cada giro. Em 90 graus a folha so
+// troca de lados, e a imagem e regravada na nova orientacao - o que sai salvo
+// ja sai girado, sem depender de o programa lembrar do angulo.
+function rotateBackground(sentido) {
+    if (!bgImage || workspaceMode !== "home") return false;
+    pushHistory();
+    const largura = docWidth;
+    const altura = docHeight;
+    const destino = document.createElement("canvas");
+    destino.width = altura;
+    destino.height = largura;
+    const pincel = destino.getContext("2d");
+    pincel.imageSmoothingEnabled = true;
+    pincel.imageSmoothingQuality = "high";
+    pincel.translate(altura / 2, largura / 2);
+    pincel.rotate(sentido * Math.PI / 2);
+    pincel.drawImage(bgImage, -largura / 2, -altura / 2, largura, altura);
+    bgImage = destino;
+    homeBgImage = destino;
+    // A copia preparada era do enquadramento anterior.
+    bgProxySource = null;
+    docWidth = altura;
+    docHeight = largura;
+    // As marcacoes viram junto: elas apontam para pontos da imagem, e ficar
+    // paradas enquanto o desenho gira seria apontar para o lugar errado.
+    annotations.forEach(shape => {
+        const centro = shapeCenter(shape);
+        const novo = sentido > 0
+            ? {x: altura - centro.y, y: centro.x}
+            : {x: centro.y, y: largura - centro.x};
+        shiftAnnotation(shape, novo.x - centro.x, novo.y - centro.y);
+        shape.angle = shapeAngle(shape) + sentido * 90;
+        invalidateShapeBounds(shape);
+    });
+    selectedIndex = -1;
+    fitToWorkspace();
+    redraw();
+    scheduleClipboardSync();
+    setStatus(sentido > 0 ? "Imagem girada para a direita." : "Imagem girada para a esquerda.");
+    return true;
+}
+
 let pendingOpacity = 1;
 let pendingAngle = 0;
 
 function currentOpacity() {
     const alvo = selectedElement();
-    return alvo ? shapeOpacity(alvo) : pendingOpacity;
+    if (alvo) return shapeOpacity(alvo);
+    return backgroundIsTarget() ? bgOpacity : pendingOpacity;
+}
+
+// Uma frase so, usada nos dois menus: quem le precisa saber onde o ajuste cai.
+function alvoDoAjuste() {
+    if (selectedElement()) return "Vale para o que está selecionado.";
+    if (backgroundIsTarget()) return "Sem seleção, vale para a imagem capturada.";
+    return "Sem seleção, vale para a próxima marcação.";
 }
 
 function currentAngle() {
@@ -1625,6 +1698,7 @@ function currentAngle() {
 function applyOpacity(valor) {
     const fracao = Math.max(0.05, Math.min(1, Number(valor) || 0));
     const alvo = selectedElement();
+    if (!alvo && backgroundIsTarget()) return applyBackgroundOpacity(fracao);
     if (!alvo) {
         pendingOpacity = fracao;
         setStatus(`Transparência de ${Math.round((1 - fracao) * 100)}% para a próxima marcação.`);
@@ -1640,6 +1714,14 @@ function applyOpacity(valor) {
 
 function applyAngle(graus, relativo = false) {
     const alvo = selectedElement();
+    if (!alvo && backgroundIsTarget()) {
+        const passo = Number(graus);
+        if (Math.abs(passo) !== 90) {
+            setStatus("A imagem capturada gira de 90 em 90 graus.");
+            return false;
+        }
+        return rotateBackground(passo > 0 ? 1 : -1);
+    }
     const base = relativo ? currentAngle() : 0;
     const valor = ((Math.round(base + Number(graus) || 0) % 360) + 360) % 360;
     if (!alvo) {
@@ -1799,29 +1881,30 @@ function renderToolConfigMenu(popover, tool) {
             + '<input class="config-range" type="range" min="0" max="95" step="5" value="' + porcento
             + '" aria-label="Transparência em porcento">'
             + '<span class="config-hint config-porcento">' + porcento + '%</span></div>'
-            + '<div class="config-hint" style="margin-top:8px">'
-            + (selectedElement() ? "Vale para o que está selecionado."
-                                 : "Sem seleção, vale para a próxima marcação.") + "</div>";
+            + '<div class="config-hint" style="margin-top:8px">' + alvoDoAjuste() + "</div>";
     }
     if (config.rotation) {
-        const graus = Math.round(currentAngle());
-        html += '<span class="picker-label">Ângulo</span>'
-            + '<div class="config-size-row">'
-            + '<input class="config-size config-angulo" type="number" min="0" max="359" step="1" value="'
-            + graus + '" aria-label="Ângulo em graus">'
-            + '<span class="config-stepper">'
-            + '<button type="button" data-girar="1" tabindex="-1" aria-label="Mais um grau">&#9650;</button>'
-            + '<button type="button" data-girar="-1" tabindex="-1" aria-label="Menos um grau">&#9660;</button>'
-            + '</span><span class="config-hint">0 a 359</span></div>'
-            + '<span class="picker-label">Um quarto de volta</span>'
+        const naImagem = !selectedElement() && backgroundIsTarget();
+        // Na imagem capturada o angulo e travado em quartos de volta: um angulo
+        // livre deixaria a folha com quinas vazias e mudaria o tamanho dela.
+        if (!naImagem) {
+            const graus = Math.round(currentAngle());
+            html += '<span class="picker-label">Ângulo</span>'
+                + '<div class="config-size-row">'
+                + '<input class="config-size config-angulo" type="number" min="0" max="359" step="1" value="'
+                + graus + '" aria-label="Ângulo em graus">'
+                + '<span class="config-stepper">'
+                + '<button type="button" data-girar="1" tabindex="-1" aria-label="Mais um grau">&#9650;</button>'
+                + '<button type="button" data-girar="-1" tabindex="-1" aria-label="Menos um grau">&#9660;</button>'
+                + '</span><span class="config-hint">0 a 359</span></div>';
+        }
+        html += '<span class="picker-label">Um quarto de volta</span>'
             + '<div class="option-choices" role="group" aria-label="Girar 90 graus">'
             + '<button class="option-choice" data-girar="-90">'
             + '<span class="material-symbols-outlined">rotate_left</span><span>Esquerda</span></button>'
             + '<button class="option-choice" data-girar="90">'
             + '<span class="material-symbols-outlined">rotate_right</span><span>Direita</span></button></div>'
-            + '<div class="config-hint" style="margin-top:8px">'
-            + (selectedElement() ? "Vale para o que está selecionado."
-                                 : "Sem seleção, vale para a próxima marcação.") + "</div>";
+            + '<div class="config-hint" style="margin-top:8px">' + alvoDoAjuste() + "</div>";
     }
     if (config.text) {
         const atual = String(byId("cfg-numero").value || "1");
@@ -2805,6 +2888,13 @@ canvas.addEventListener("contextmenu", event => {
             showAnnotationMenu(marcacao.index, event.clientX, event.clientY);
             return;
         }
+        // No vazio da Pagina Inicial quem responde e a propria captura.
+        if (workspaceMode === "home" && bgImage) {
+            selectedIndex = -1;
+            redraw();
+            showBackgroundMenu(event.clientX, event.clientY);
+            return;
+        }
     }
     interruptCommand();
 });
@@ -2835,6 +2925,17 @@ function showAnnotationMenu(index, clientX, clientY) {
             setStatus("Marcação removida.");
             scheduleClipboardSync();
         }}
+    ]);
+}
+
+// Menu da imagem capturada: ela nao da para selecionar, entao e no vazio da
+// folha que o botao direito a alcanca.
+function showBackgroundMenu(clientX, clientY) {
+    montarMenuFlutuante(clientX, clientY, [
+        {rotulo: "Transparência da imagem…", icone: "opacity",
+         acao: () => abrirMenuDaFerramenta("Transparencia")},
+        {rotulo: "Girar 90° à esquerda", icone: "rotate_left", acao: () => rotateBackground(-1)},
+        {rotulo: "Girar 90° à direita", icone: "rotate_right", acao: () => rotateBackground(1)}
     ]);
 }
 
@@ -2968,6 +3069,21 @@ function renderScale() {
     return canvas.width / Math.max(1, docWidth);
 }
 
+// Apagada, a captura desbota para o branco da folha - nao para o quadriculado
+// de transparencia. E o que se espera de "clarear a imagem para a marcacao
+// aparecer", e e o que sai igual na imagem salva.
+function paintBackground(context, source) {
+    if (!source) return;
+    if (bgOpacity < 1) {
+        context.fillStyle = "#FFFFFF";
+        context.fillRect(0, 0, docWidth, docHeight);
+    }
+    context.save();
+    context.globalAlpha = bgOpacity;
+    context.drawImage(source, 0, 0, docWidth, docHeight);
+    context.restore();
+}
+
 function redraw() {
     redrawPending = false;
     refreshCanvasScale();
@@ -2983,7 +3099,7 @@ function redraw() {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "low";
     ctx.clearRect(0, 0, docWidth, docHeight);
-    ctx.drawImage(backgroundRenderSource(scale), 0, 0, docWidth, docHeight);
+    paintBackground(ctx, backgroundRenderSource(scale));
     annotations.forEach((annotation, index) =>
         drawShape(ctx, drawableAnnotation(annotation, index), index === selectedIndex));
     if (preview) drawShape(ctx, preview, false, true);
@@ -4914,7 +5030,8 @@ function snapshotState() {
         editionAnnotations: cloneAnnotations(activeEditionAnnotations()),
         editionItems: editionItems.map(cloneEditionItem),
         editionCanvasSize: {width: editionCanvasSize.width, height: editionCanvasSize.height},
-        bgImage: workspaceMode === "home" ? bgImage : homeBgImage
+        bgImage: workspaceMode === "home" ? bgImage : homeBgImage,
+        bgOpacity
     };
 }
 
@@ -4929,6 +5046,7 @@ function stateSignature() {
             ? shape.points.map(point => `${Math.round(point.x)},${Math.round(point.y)}`).join(";")
             : ""
     ].join("|"));
+    const fundo = [Math.round(docWidth), Math.round(docHeight), bgOpacity.toFixed(3)].join("|");
     const items = editionItems.map(item => {
         const recorte = itemCrop(item);
         return [
@@ -4937,7 +5055,7 @@ function stateSignature() {
             [recorte.x, recorte.y, recorte.w, recorte.h].map(v => v.toFixed(4)).join(",")
         ].join("|");
     });
-    return `${shapes.join("\n")}##${items.join("\n")}`;
+    return `${shapes.join("\n")}##${items.join("\n")}##${fundo}`;
 }
 
 function pushHistory() {
@@ -4970,6 +5088,7 @@ function restoreState(state) {
     editionItems = state.editionItems.map(cloneEditionItem);
     editionCanvasSize = {width: state.editionCanvasSize.width, height: state.editionCanvasSize.height};
     homeBgImage = state.bgImage;
+    bgOpacity = Number.isFinite(state.bgOpacity) ? state.bgOpacity : 1;
     selectedIndex = -1;
     selectedEditionItemIndex = -1;
     interactionMode = null;
@@ -5118,7 +5237,7 @@ function exportDataUrl(type = "image/png") {
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = "low";
         ctx.clearRect(0, 0, docWidth, docHeight);
-        ctx.drawImage(bgImage, 0, 0, docWidth, docHeight);
+        paintBackground(ctx, bgImage);
         annotations.forEach(annotation => drawShape(ctx, annotation, false));
     }
     ctx = oldContext;

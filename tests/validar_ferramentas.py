@@ -1236,12 +1236,18 @@ def main():
             applyAngle(-360, true);
             if (annotations[0].angle !== 180) return 'volta inteira mudou o angulo';
             if (historyStack.length !== 4) return 'desfazer: ' + historyStack.length;
-            // Sem selecao os valores ficam guardados e nascem na proxima.
+            // Sem selecao e sem captura por perto (guia Edicao), os valores
+            // ficam guardados e nascem na proxima marcacao.
+            const modoAntes = workspaceMode;
+            workspaceMode = 'edition';
             selectedIndex = -1;
+            selectedEditionItemIndex = -1;
             applyOpacity(0.6);
             applyAngle(45);
             const opcoes = getOptions();
-            return Math.abs(opcoes.opacity - 0.6) < 1e-6 && opcoes.angle === 45;
+            workspaceMode = modoAntes;
+            if (Math.abs(opcoes.opacity - 0.6) > 1e-6) return 'guardado: ' + opcoes.opacity;
+            return opcoes.angle === 45 ? true : 'angulo guardado: ' + opcoes.angle;
         })() === true""")
         check("""(() => {
             // As duas ferramentas selecionam, como o Mover, e trocar entre elas
@@ -1297,6 +1303,113 @@ def main():
             return true;
         })() === true""")
         js("annotations.length = 0; selectedIndex = -1; selectTool('Mover', false); redraw()")
+        # --- na Pagina Inicial os ajustes caem na propria captura ---
+        js("annotations.length = 0; selectedIndex = -1; selectTool('Mover', false); fitToWorkspace()")
+        QTest.qWait(200)
+        check("""(() => {
+            if (workspaceMode !== 'home' || !bgImage) return 'sem captura para testar';
+            const larguraAntes = docWidth, alturaAntes = docHeight;
+            annotations.length = 0;
+            selectedIndex = -1;
+            historyStack.length = 0; redoStack.length = 0;
+
+            // Sem selecao, o alvo e a imagem - e o menu diz isso.
+            if (!backgroundIsTarget()) return 'a captura nao virou alvo';
+            if (!alvoDoAjuste().includes('imagem capturada')) return 'o aviso nao mudou';
+            if (Math.abs(currentOpacity() - 1) > 1e-6) return 'comecou apagada';
+
+            // Transparencia: vai para a imagem, nao para a proxima marcacao.
+            if (!applyOpacity(0.4)) return 'nao aplicou na imagem';
+            if (Math.abs(bgOpacity - 0.4) > 1e-6) return 'bgOpacity: ' + bgOpacity;
+            if (Math.abs(getOptions().opacity - 0.4) < 1e-6) return 'foi parar na proxima marcacao';
+
+            // E some da imagem exportada tambem, nao so da tela. A captura da
+            // suite e branca, e branco apagado sobre branco continua branco:
+            // por isso o teste troca por uma imagem com cor antes de comparar.
+            const imagemAntes = bgImage;
+            const pintada = document.createElement('canvas');
+            pintada.width = docWidth; pintada.height = docHeight;
+            const pincel = pintada.getContext('2d');
+            pincel.fillStyle = '#003366';
+            pincel.fillRect(0, 0, docWidth, docHeight);
+            bgImage = pintada;
+            bgProxySource = null;
+            const clarinho = exportDataUrl('image/png');
+            bgOpacity = 1;
+            const cheio = exportDataUrl('image/png');
+            bgImage = imagemAntes;
+            bgProxySource = null;
+            if (clarinho === cheio) return 'a exportacao ignorou a transparencia';
+            bgOpacity = 0.4;
+
+            // Giro: so de 90 em 90.
+            if (applyAngle(45)) return 'aceitou 45 graus na imagem';
+            if (docWidth !== larguraAntes) return 'girou mesmo recusando';
+            // Uma marcacao junto, para conferir que ela vira com a imagem.
+            annotations.push({type: 'Retangulo', x: 20, y: 20, w: 100, h: 60,
+                              color: '#000', thick: 4});
+            const centroAntes = shapeCenter(annotations[0]);
+            if (!applyAngle(90)) return 'nao girou a imagem';
+            if (docWidth !== alturaAntes || docHeight !== larguraAntes) {
+                return 'a folha nao trocou de lados: ' + docWidth + 'x' + docHeight;
+            }
+            // Um quarto de volta a direita leva (x, y) para (H - y, x).
+            const centroDepois = shapeCenter(annotations[0]);
+            if (Math.abs(centroDepois.x - (alturaAntes - centroAntes.y)) > 1) {
+                return 'a marcacao nao acompanhou em x: ' + centroDepois.x;
+            }
+            if (Math.abs(centroDepois.y - centroAntes.x) > 1) {
+                return 'a marcacao nao acompanhou em y: ' + centroDepois.y;
+            }
+            if (shapeAngle(annotations[0]) !== 90) return 'a marcacao nao girou junto';
+            // A transparencia escolhida sobrevive ao giro.
+            if (Math.abs(bgOpacity - 0.4) > 1e-6) return 'o giro zerou a transparencia';
+
+            // Desfazer devolve tudo: lados da folha, marcacao e transparencia.
+            undoAnnotation();
+            if (docWidth !== larguraAntes || docHeight !== alturaAntes) return 'desfazer nao voltou a folha';
+            undoAnnotation();
+            if (Math.abs(bgOpacity - 1) > 1e-6) return 'desfazer nao voltou a transparencia';
+
+            bgOpacity = 1;
+            annotations.length = 0;
+            fitToWorkspace();
+            return true;
+        })() === true""")
+        # O menu de girar esconde o campo de angulo livre quando o alvo e a imagem.
+        check("""(() => {
+            annotations.length = 0;
+            selectedIndex = -1;
+            selectTool('Mover', false);
+            abrirMenuDaFerramenta('Rotacionar');
+            const popover = byId('tool-config-popover');
+            const semCampo = !popover.querySelector('.config-angulo');
+            const temQuartos = popover.querySelectorAll("[data-girar='90']").length === 1;
+            // Com uma marcacao selecionada o campo volta.
+            annotations.push({type: 'Retangulo', x: 100, y: 100, w: 80, h: 60, color: '#000', thick: 4});
+            selectedIndex = 0;
+            renderToolConfigMenu(popover, 'Rotacionar');
+            const comCampo = Boolean(popover.querySelector('.config-angulo'));
+            closeFormatPopover();
+            annotations.length = 0;
+            selectedIndex = -1;
+            if (!semCampo) return 'o campo de angulo livre ficou na imagem';
+            if (!temQuartos) return 'faltaram os quartos de volta';
+            return comCampo ? true : 'o campo nao voltou com a marcacao selecionada';
+        })() === true""")
+        # E o botao direito no vazio alcanca a captura.
+        check("""(() => {
+            annotations.length = 0;
+            selectedIndex = -1;
+            showBackgroundMenu(200, 200);
+            const itens = [...document.querySelectorAll('.image-menu button')].map(b => b.textContent.trim());
+            closeEditionImageMenu();
+            return itens.length === 3
+                && itens[0].includes('Transparência da imagem')
+                && itens[1].includes('esquerda') && itens[2].includes('direita');
+        })()""")
+        print("OK: na Pagina Inicial a captura recebe transparencia e gira de 90 em 90")
+
         print("OK: transparencia e giro no desenho, no clique, no menu e na selecao")
 
         # --- a imagem da Edicao gira e fica transparente do mesmo jeito ---
@@ -1419,6 +1532,90 @@ def main():
             return true;
         })() === true""")
         print("OK: menu flutuante sem selecao de texto, arrastavel pelo titulo e preso a janela")
+
+        # --- giro e transparencia sobrevivem a copiar, colar, salvar ---
+        check("""(() => {
+            annotations.length = 0;
+            selectedIndex = -1;
+            selectTool('Mover', false);
+            annotations.push({type: 'Retangulo', x: 120, y: 120, w: 160, h: 100,
+                              color: '#C00000', thick: 8, angle: 40, opacity: 0.45});
+
+            // Ctrl+C / Ctrl+V: a copia nasce com o mesmo giro e a mesma
+            // transparencia, so deslocada.
+            selectedIndex = 0;
+            if (!copySelectedElement()) return 'nao copiou';
+            if (!pasteCopiedElement()) return 'nao colou';
+            const copia = annotations[1];
+            if (!copia) return 'a copia nao entrou';
+            if (copia.angle !== 40) return 'giro perdido ao colar: ' + copia.angle;
+            if (Math.abs(copia.opacity - 0.45) > 1e-6) return 'transparencia perdida: ' + copia.opacity;
+            if (copia.x === annotations[0].x && copia.y === annotations[0].y) return 'colou em cima';
+            // Colar de novo nao reaproveita o mesmo objeto.
+            pasteCopiedElement();
+            if (annotations[2] === annotations[1]) return 'as copias compartilham o objeto';
+            annotations.length = 1;
+
+            // Desfazer/refazer guardam os dois campos.
+            historyStack.length = 0; redoStack.length = 0;
+            pushHistory();
+            annotations[0].angle = 0;
+            annotations[0].opacity = 1;
+            undoAnnotation();
+            if (annotations[0].angle !== 40) return 'desfazer perdeu o giro';
+            if (Math.abs(annotations[0].opacity - 0.45) > 1e-6) return 'desfazer perdeu a transparencia';
+
+            // A imagem salva sai com os dois aplicados: girar e apagar mudam o
+            // que e exportado, nao so o que aparece na tela.
+            selectedIndex = -1;
+            const comEfeito = exportDataUrl('image/png');
+            const guardado = {angle: annotations[0].angle, opacity: annotations[0].opacity};
+            annotations[0].angle = 0;
+            annotations[0].opacity = 1;
+            const semEfeito = exportDataUrl('image/png');
+            annotations[0].angle = guardado.angle;
+            annotations[0].opacity = guardado.opacity;
+            if (comEfeito === semEfeito) return 'a imagem salva ignorou giro e transparencia';
+
+            // E o mesmo para uma imagem da guia Edicao.
+            const modoAntes = workspaceMode, itensAntes = editionItems;
+            const larguraAntes = docWidth, alturaAntes = docHeight;
+            const anotacoesAntes = annotations;
+            try {
+                workspaceMode = 'edition';
+                docWidth = 1200; docHeight = 800;
+                annotations = [];
+                editionItems = [{x: 100, y: 100, w: 300, h: 200, image: imagemDeTeste,
+                                 angle: 90, opacity: 0.5}];
+                selectedEditionItemIndex = 0;
+                selectedIndex = -1;
+                if (!copySelectedElement()) return 'nao copiou a imagem';
+                if (!pasteCopiedElement()) return 'nao colou a imagem';
+                const foto = editionItems[1];
+                if (!foto) return 'a foto colada nao entrou';
+                if (foto.angle !== 90) return 'giro perdido na foto: ' + foto.angle;
+                if (Math.abs(foto.opacity - 0.5) > 1e-6) return 'transparencia perdida na foto';
+                if (foto.image !== imagemDeTeste) return 'a foto colada perdeu a imagem';
+
+                selectedEditionItemIndex = -1;
+                const fotoComEfeito = exportDataUrl('image/png');
+                editionItems.forEach(item => { item.angle = 0; item.opacity = 1; });
+                const fotoSemEfeito = exportDataUrl('image/png');
+                return fotoComEfeito === fotoSemEfeito
+                    ? 'a imagem salva da Edicao ignorou giro e transparencia' : true;
+            } finally {
+                workspaceMode = modoAntes;
+                editionItems = itensAntes;
+                annotations = anotacoesAntes;
+                annotations.length = 0;
+                selectedEditionItemIndex = -1;
+                selectedIndex = -1;
+                elementClipboard = null;
+                docWidth = larguraAntes; docHeight = alturaAntes;
+                fitToWorkspace();
+            }
+        })() === true""")
+        print("OK: giro e transparencia sobrevivem a copiar, colar, desfazer e salvar")
 
         # --- alcas mantem o tamanho aparente com o zoom ---
         check("""(() => {
