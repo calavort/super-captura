@@ -938,16 +938,71 @@ function editionSnapTolerance() {
     return screenUnits(6);
 }
 
+// Espacamento igual, a outra metade do que o PowerPoint faz: alem de alinhar
+// bordas, a imagem arrastada procura repetir um vao que ja existe entre as
+// outras. Tres jeitos de repetir, e e o mais proximo que vence:
+//   - depois de B, com o mesmo vao que separa A de B;
+//   - antes de A, pelo mesmo motivo;
+//   - no meio do vao entre A e B, deixando as duas folgas iguais.
+function editionSpacingSnap(inicio, tamanho, caixas, tolerancia) {
+    let melhor = null;
+    const propor = (destino, vaos) => {
+        const distancia = Math.abs(destino - inicio);
+        if (distancia > tolerancia || (melhor && distancia >= melhor.distancia)) return;
+        // Vao degenerado nao vira marca na tela.
+        if (vaos.some(([de, ate]) => ate - de < 1)) return;
+        melhor = {distancia, inicio: destino, vaos};
+    };
+    for (let i = 0; i < caixas.length; i++) {
+        for (let j = 0; j < caixas.length; j++) {
+            if (i === j) continue;
+            const a = caixas[i], b = caixas[j];
+            const vao = b.ini - a.fim;
+            if (vao <= 0) continue;
+            const depois = b.fim + vao;
+            propor(depois, [[a.fim, b.ini], [b.fim, depois]]);
+            const antes = a.ini - vao - tamanho;
+            propor(antes, [[antes + tamanho, a.ini], [a.fim, b.ini]]);
+            if (vao > tamanho) {
+                const meio = (a.fim + b.ini - tamanho) / 2;
+                propor(meio, [[a.fim, meio], [meio + tamanho, b.ini]]);
+            }
+        }
+    }
+    return melhor;
+}
+
 function moveEditionItem(item, x, y) {
-    const targets = editionSnapTargets(editionItems.indexOf(item));
+    const indice = editionItems.indexOf(item);
+    const targets = editionSnapTargets(indice);
     const tolerance = editionSnapTolerance();
+    const outros = editionItems.filter((_, posicao) => posicao !== indice);
+
+    // Alinhar tem preferencia sobre espacar: encostar uma borda na outra e o
+    // que se quer na maioria das vezes, e os dois no mesmo eixo se atrapalham.
     const horizontal = snapEditionAxis(x, item.w, targets.vertical, tolerance);
     const vertical = snapEditionAxis(y, item.h, targets.horizontal, tolerance);
-    item.x = horizontal ? horizontal.start : x;
-    item.y = vertical ? vertical.start : y;
+    const vaoX = horizontal ? null : editionSpacingSnap(
+        x, item.w, outros.map(outro => ({ini: outro.x, fim: outro.x + outro.w})), tolerance);
+    const vaoY = vertical ? null : editionSpacingSnap(
+        y, item.h, outros.map(outro => ({ini: outro.y, fim: outro.y + outro.h})), tolerance);
+
+    item.x = horizontal ? horizontal.start : (vaoX ? vaoX.inicio : x);
+    item.y = vertical ? vertical.start : (vaoY ? vaoY.inicio : y);
+
+    // As marcas sao desenhadas na altura (ou na largura) do meio da imagem que
+    // esta sendo arrastada, entao so podem ser montadas depois dos dois eixos.
     editionGuides = [];
     if (horizontal) editionGuides.push({vertical: true, at: horizontal.line});
     if (vertical) editionGuides.push({vertical: false, at: vertical.line});
+    if (vaoX) {
+        const meio = item.y + item.h / 2;
+        vaoX.vaos.forEach(([de, ate]) => editionGuides.push({vao: true, eixo: "x", de, ate, em: meio}));
+    }
+    if (vaoY) {
+        const meio = item.x + item.w / 2;
+        vaoY.vaos.forEach(([de, ate]) => editionGuides.push({vao: true, eixo: "y", de, ate, em: meio}));
+    }
 }
 
 function resizeEditionItem(item, point) {
@@ -1029,6 +1084,57 @@ function backgroundRenderSource(scale) {
     return bgProxyCanvas;
 }
 
+// O recorte de uma imagem da guia Edicao e guardado em fracao da imagem
+// original (0 a 1), nunca em pixels: assim ele sobrevive a redimensionar, a
+// copia reduzida usada no arraste vale igual, e desfazer o corte e so descartar
+// este campo - a imagem inteira continua guardada.
+const RECORTE_INTEIRO = {x: 0, y: 0, w: 1, h: 1};
+
+function itemCrop(item) {
+    const recorte = item && item.crop;
+    if (!recorte) return RECORTE_INTEIRO;
+    return {
+        x: Math.max(0, Math.min(1, Number(recorte.x) || 0)),
+        y: Math.max(0, Math.min(1, Number(recorte.y) || 0)),
+        w: Math.max(0.01, Math.min(1, Number(recorte.w) || 1)),
+        h: Math.max(0.01, Math.min(1, Number(recorte.h) || 1))
+    };
+}
+
+function itemIsCropped(item) {
+    const recorte = itemCrop(item);
+    return recorte.x > 0.0005 || recorte.y > 0.0005 || recorte.w < 0.9995 || recorte.h < 0.9995;
+}
+
+// Onde a imagem INTEIRA cairia na folha, dado o pedaco que esta aparecendo.
+// E esse quadro que o modo de corte mostra apagado em volta.
+function itemFullFrame(item) {
+    const recorte = itemCrop(item);
+    const largura = item.w / recorte.w;
+    const altura = item.h / recorte.h;
+    return {x: item.x - recorte.x * largura, y: item.y - recorte.y * altura, w: largura, h: altura};
+}
+
+// Retangulo de origem, em pixels da fonte que vai ser desenhada (a imagem ou a
+// copia reduzida - a fracao serve para as duas).
+function cropSourceRect(item, source) {
+    const recorte = itemCrop(item);
+    const largura = source.naturalWidth || source.width;
+    const altura = source.naturalHeight || source.height;
+    return {
+        sx: recorte.x * largura, sy: recorte.y * altura,
+        sw: Math.max(1, recorte.w * largura), sh: Math.max(1, recorte.h * altura)
+    };
+}
+
+function drawEditionItem(context, item, destino = null) {
+    const source = editionRenderSource(item);
+    if (!source) return;
+    const caixa = destino || item;
+    const {sx, sy, sw, sh} = cropSourceRect(item, source);
+    context.drawImage(source, sx, sy, sw, sh, caixa.x, caixa.y, caixa.w, caixa.h);
+}
+
 function buildEditionProxy(item, width, height) {
     item.proxy = downscaleInSteps(item.image, width, height, item.proxy);
     item.proxyWidth = width;
@@ -1042,8 +1148,11 @@ function editionRenderSource(item) {
     // pesado. A cópia tem a resolução da página, então o que é salvo/copiado
     // continua com a mesma qualidade do que está na tela.
     if (!item.image) return null;
-    const width = Math.max(1, Math.round(Math.abs(item.w)));
-    const height = Math.max(1, Math.round(Math.abs(item.h)));
+    // Com recorte, o pedaco visivel ocupa item.w: a imagem inteira precisa de
+    // uma copia proporcionalmente maior para o pedaco sair na resolucao certa.
+    const recorte = itemCrop(item);
+    const width = Math.max(1, Math.round(Math.abs(item.w) / recorte.w));
+    const height = Math.max(1, Math.round(Math.abs(item.h) / recorte.h));
     const natural = item.image.naturalWidth || item.image.width || width;
     if (natural <= width * 1.15) return item.image;
     const stale = !item.proxyWidth || Math.abs(item.proxyWidth - width) > Math.max(4, width * 0.2);
@@ -1780,6 +1889,8 @@ function nudgeSelection(dx, dy) {
 }
 
 function interruptCommand() {
+    closeEditionImageMenu();
+    if (endEditionCrop(true)) return;
     const handled = finishActiveCommand(true);
     selectedIndex = -1;
     selectTool("Mover", false);
@@ -2160,6 +2271,19 @@ canvas.addEventListener("mousedown", event => {
     const point = getMousePos(event);
     const options = getOptions();
 
+    if (editionCropIndex >= 0) {
+        const alca = findEditionCropHandle(point.x, point.y);
+        if (alca) {
+            interactionMode = "edition-crop";
+            resizeCorner = alca;
+            isDrawing = true;
+            return;
+        }
+        // Clicar fora do que esta sendo cortado conclui, como no PowerPoint.
+        endEditionCrop(true);
+        return;
+    }
+
     if (currentTool === "Mover") {
         const hit = findAnnotationAt(point.x, point.y, true);
         selectedIndex = hit.index;
@@ -2283,6 +2407,12 @@ function handleDrawingPointerMove(event) {
     }
     if (!isDrawing) return;
 
+    if (interactionMode === "edition-crop" && editionCropIndex >= 0) {
+        resizeEditionCrop(editionItems[editionCropIndex], resizeCorner, point);
+        scheduleRedraw();
+        return;
+    }
+
     if (currentTool === "Mover" && workspaceMode === "edition" && selectedEditionItemIndex >= 0) {
         const item = editionItems[selectedEditionItemIndex];
         if (interactionMode === "edition-image-resize") {
@@ -2361,6 +2491,15 @@ window.addEventListener("pointermove", event => {
 function finishDrawing(event) {
     if (!isDrawing) return;
     if (currentTool === "LinhaOrto") return;
+    if (interactionMode === "edition-crop") {
+        // A transação do corte só fecha ao sair do modo: assim a sessão inteira
+        // é um desfazer só, e não um por alça arrastada.
+        isDrawing = false;
+        interactionMode = null;
+        resizeCorner = null;
+        redraw();
+        return;
+    }
     if (currentTool === "Mover") {
         if (workspaceMode === "edition" && selectedEditionItemIndex >= 0) {
             finalizeEditionItemTransform(editionItems[selectedEditionItemIndex]);
@@ -2423,8 +2562,77 @@ canvas.addEventListener("mouseup", finishDrawing);
 window.addEventListener("mouseup", finishDrawing);
 canvas.addEventListener("contextmenu", event => {
     event.preventDefault();
+    // Na guia Edição, o botão direito sobre uma imagem abre o menu dela; fora
+    // disso ele continua sendo o "interromper" de sempre.
+    if (workspaceMode === "edition" && editionCropIndex < 0) {
+        const ponto = getMousePos(event);
+        const alvo = findEditionItemAt(ponto.x, ponto.y);
+        if (alvo.index >= 0) {
+            selectedEditionItemIndex = alvo.index;
+            selectedIndex = -1;
+            redraw();
+            showEditionImageMenu(alvo.index, event.clientX, event.clientY);
+            return;
+        }
+    }
     interruptCommand();
 });
+
+// Menu da imagem. Usa a mesma moldura dos menus de ferramenta (.format-popover)
+// para não destoar, e fecha pelos mesmos caminhos: clique fora, ESC, rolagem.
+let editionMenu = null;
+
+function closeEditionImageMenu() {
+    if (!editionMenu) return;
+    editionMenu.remove();
+    editionMenu = null;
+}
+
+function showEditionImageMenu(index, clientX, clientY) {
+    closeEditionImageMenu();
+    const item = editionItems[index];
+    if (!item) return;
+    const menu = document.createElement("section");
+    menu.className = "format-popover image-menu";
+    menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", "Opções da imagem");
+    const opcoes = [
+        {rotulo: "Cortar imagem", icone: "crop", acao: () => beginEditionCrop(index)}
+    ];
+    if (itemIsCropped(item)) {
+        opcoes.push({rotulo: "Restaurar imagem inteira", icone: "restore", acao: () => resetEditionCrop(index)});
+    }
+    opcoes.push({rotulo: "Remover imagem", icone: "delete", acao: () => {
+        pushHistory();
+        editionItems.splice(index, 1);
+        selectedEditionItemIndex = -1;
+        redraw();
+        setStatus("Imagem removida da edição.");
+        scheduleClipboardSync();
+    }});
+    opcoes.forEach(opcao => {
+        const botao = document.createElement("button");
+        botao.type = "button";
+        botao.className = "menu-item";
+        botao.setAttribute("role", "menuitem");
+        botao.innerHTML = `<span class="material-symbols-outlined">${opcao.icone}</span>${opcao.rotulo}`;
+        botao.addEventListener("click", () => {
+            closeEditionImageMenu();
+            opcao.acao();
+        });
+        menu.appendChild(botao);
+    });
+    document.body.appendChild(menu);
+    editionMenu = menu;
+    menu.style.left = `${Math.max(8, Math.min(clientX, innerWidth - menu.offsetWidth - 8))}px`;
+    menu.style.top = `${Math.max(8, Math.min(clientY, innerHeight - menu.offsetHeight - 8))}px`;
+    menu.querySelector("button")?.focus({preventScroll: true});
+}
+
+document.addEventListener("mousedown", event => {
+    if (editionMenu && !editionMenu.contains(event.target)) closeEditionImageMenu();
+}, true);
+window.addEventListener("resize", closeEditionImageMenu);
 canvas.addEventListener("dblclick", event => {
     if (!ensureImage() || activeTextEditor) return;
     event.preventDefault();
@@ -2528,8 +2736,11 @@ function drawEditionWorkspace() {
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = "low";
     editionItems.forEach((item, index) => {
-        const source = editionRenderSource(item);
-        if (source) ctx.drawImage(source, item.x, item.y, item.w, item.h);
+        if (index === editionCropIndex) {
+            drawEditionCropOverlay(item);
+            return;
+        }
+        drawEditionItem(ctx, item);
         if (index === selectedEditionItemIndex) drawEditionImageSelection(item);
     });
     drawEditionGuides();
@@ -2543,9 +2754,14 @@ function drawEditionGuides() {
     if (!editionGuides.length) return;
     ctx.save();
     ctx.strokeStyle = "#D13438";
+    ctx.fillStyle = "#D13438";
     ctx.lineWidth = screenUnits(1);
-    ctx.setLineDash([screenUnits(6), screenUnits(4)]);
     editionGuides.forEach(guide => {
+        if (guide.vao) {
+            drawSpacingGuide(guide);
+            return;
+        }
+        ctx.setLineDash([screenUnits(6), screenUnits(4)]);
         ctx.beginPath();
         if (guide.vertical) {
             ctx.moveTo(guide.at, 0);
@@ -2555,6 +2771,198 @@ function drawEditionGuides() {
             ctx.lineTo(docWidth, guide.at);
         }
         ctx.stroke();
+    });
+    ctx.restore();
+}
+
+// A marca do vao: uma seta de duas pontas medindo a folga, com um risco em cada
+// borda - a mesma figura que o PowerPoint desenha quando os espacos empatam.
+function drawSpacingGuide(guide) {
+    const horizontal = guide.eixo === "x";
+    const ponta = Math.min(screenUnits(5), Math.abs(guide.ate - guide.de) / 3);
+    const risco = screenUnits(7);
+    ctx.setLineDash([]);
+    ctx.beginPath();
+    if (horizontal) {
+        ctx.moveTo(guide.de, guide.em);
+        ctx.lineTo(guide.ate, guide.em);
+        ctx.moveTo(guide.de, guide.em - risco);
+        ctx.lineTo(guide.de, guide.em + risco);
+        ctx.moveTo(guide.ate, guide.em - risco);
+        ctx.lineTo(guide.ate, guide.em + risco);
+    } else {
+        ctx.moveTo(guide.em, guide.de);
+        ctx.lineTo(guide.em, guide.ate);
+        ctx.moveTo(guide.em - risco, guide.de);
+        ctx.lineTo(guide.em + risco, guide.de);
+        ctx.moveTo(guide.em - risco, guide.ate);
+        ctx.lineTo(guide.em + risco, guide.ate);
+    }
+    ctx.stroke();
+    const seta = (x, y, sentido) => {
+        ctx.beginPath();
+        if (horizontal) {
+            ctx.moveTo(x, y);
+            ctx.lineTo(x + ponta * sentido, y - ponta * 0.6);
+            ctx.lineTo(x + ponta * sentido, y + ponta * 0.6);
+        } else {
+            ctx.moveTo(x, y);
+            ctx.lineTo(x - ponta * 0.6, y + ponta * sentido);
+            ctx.lineTo(x + ponta * 0.6, y + ponta * sentido);
+        }
+        ctx.closePath();
+        ctx.fill();
+    };
+    if (horizontal) {
+        seta(guide.de, guide.em, 1);
+        seta(guide.ate, guide.em, -1);
+    } else {
+        seta(guide.em, guide.de, 1);
+        seta(guide.em, guide.ate, -1);
+    }
+}
+
+// --- Corte de uma imagem ------------------------------------------------
+// O "Cortar" da guia Inicial recorta a folha inteira. Este e outro: apara uma
+// imagem colada, sem mexer nas vizinhas nem jogar fora o que foi aparado - as
+// alcas puxam de volta a qualquer momento.
+let editionCropIndex = -1;
+let editionCropBefore = null;
+const CROP_MIN = 24;
+
+function beginEditionCrop(index) {
+    const item = editionItems[index];
+    if (!item) return false;
+    finishActiveCommand(true);
+    // selectTool limpa a seleção, então ele vem antes de marcar a imagem.
+    selectTool("Mover", false);
+    selectedIndex = -1;
+    selectedEditionItemIndex = index;
+    editionCropIndex = index;
+    editionCropBefore = {x: item.x, y: item.y, w: item.w, h: item.h,
+                         crop: item.crop ? {...item.crop} : null};
+    beginHistoryTransaction();
+    redraw();
+    setStatus("Cortando a imagem: arraste as alças. Enter ou clique fora conclui; ESC desfaz.");
+    return true;
+}
+
+function endEditionCrop(commit = true) {
+    if (editionCropIndex < 0) return false;
+    const item = editionItems[editionCropIndex];
+    const antes = editionCropBefore;
+    editionCropIndex = -1;
+    editionCropBefore = null;
+    interactionMode = null;
+    resizeCorner = null;
+    if (!commit && item && antes) {
+        Object.assign(item, {x: antes.x, y: antes.y, w: antes.w, h: antes.h,
+                             crop: antes.crop ? {...antes.crop} : null});
+        item.proxyWidth = 0;
+    } else if (item) {
+        finalizeEditionItemTransform(item);
+    }
+    // Cancelado, o estado volta a ser o de antes e a transação não entra no
+    // histórico: commitHistoryTransaction só grava o que mudou de verdade.
+    commitHistoryTransaction();
+    redraw();
+    scheduleClipboardSync();
+    setStatus(commit ? "Corte aplicado." : "Corte cancelado.");
+    return true;
+}
+
+function resetEditionCrop(index) {
+    const item = editionItems[index];
+    if (!item || !itemIsCropped(item)) return false;
+    pushHistory();
+    const quadro = itemFullFrame(item);
+    item.crop = null;
+    item.proxyWidth = 0;
+    item.x = quadro.x;
+    item.y = quadro.y;
+    item.w = quadro.w;
+    item.h = quadro.h;
+    finalizeEditionItemTransform(item);
+    redraw();
+    setStatus("Imagem inteira de volta.");
+    scheduleClipboardSync();
+    return true;
+}
+
+function cropHandlePoints(item) {
+    return rectHandlePoints({x: item.x, y: item.y, w: item.w, h: item.h});
+}
+
+function findEditionCropHandle(x, y) {
+    if (editionCropIndex < 0) return null;
+    const item = editionItems[editionCropIndex];
+    if (!item) return null;
+    const alcance = screenUnits(9);
+    const alca = cropHandlePoints(item)
+        .find(ponto => Math.abs(x - ponto.x) <= alcance && Math.abs(y - ponto.y) <= alcance);
+    return alca ? alca.code : null;
+}
+
+// A alca puxa a borda do pedaco visivel; ela nao passa da imagem inteira nem
+// deixa o pedaco menor que o minimo. Depois disso o recorte e recalculado a
+// partir do quadro, entao ele continua sendo fracao da imagem original.
+function resizeEditionCrop(item, corner, point) {
+    const quadro = itemFullFrame(item);
+    const lados = String(corner || "");
+    let {x, y, w, h} = item;
+    if (lados.includes("w")) {
+        const novo = Math.min(Math.max(point.x, quadro.x), x + w - CROP_MIN);
+        w += x - novo;
+        x = novo;
+    }
+    if (lados.includes("e")) {
+        w = Math.max(Math.min(point.x, quadro.x + quadro.w), x + CROP_MIN) - x;
+    }
+    if (lados.includes("n")) {
+        const novo = Math.min(Math.max(point.y, quadro.y), y + h - CROP_MIN);
+        h += y - novo;
+        y = novo;
+    }
+    if (lados.includes("s")) {
+        h = Math.max(Math.min(point.y, quadro.y + quadro.h), y + CROP_MIN) - y;
+    }
+    item.x = x;
+    item.y = y;
+    item.w = w;
+    item.h = h;
+    item.crop = {
+        x: (x - quadro.x) / quadro.w,
+        y: (y - quadro.y) / quadro.h,
+        w: w / quadro.w,
+        h: h / quadro.h
+    };
+    // A copia reduzida foi feita para o enquadramento anterior.
+    item.proxyWidth = 0;
+}
+
+function drawEditionCropOverlay(item) {
+    const quadro = itemFullFrame(item);
+    const source = editionRenderSource(item);
+    ctx.save();
+    // O que sai continua na tela, apagado: e assim que da para ver o que esta
+    // sendo jogado fora e trazer de volta arrastando a alça para tras.
+    if (source) {
+        ctx.globalAlpha = 0.3;
+        ctx.drawImage(source, quadro.x, quadro.y, quadro.w, quadro.h);
+        ctx.globalAlpha = 1;
+        drawEditionItem(ctx, item);
+    }
+    ctx.strokeStyle = "#323130";
+    ctx.lineWidth = screenUnits(1);
+    ctx.setLineDash([screenUnits(5), screenUnits(4)]);
+    ctx.strokeRect(quadro.x, quadro.y, quadro.w, quadro.h);
+    ctx.setLineDash([]);
+    ctx.strokeRect(item.x, item.y, item.w, item.h);
+    // Alças pretas, como no PowerPoint: a cor separa cortar de redimensionar.
+    const lado = screenUnits(9);
+    ctx.fillStyle = "#1B1A19";
+    cropHandlePoints(item).forEach(ponto => {
+        ctx.fillRect(ponto.x - lado / 2, ponto.y - lado / 2, lado, lado);
     });
     ctx.restore();
 }
@@ -3224,7 +3632,9 @@ function paintCoverSource(target, sx, sy, sw, sh, width, height) {
             if (!item.image) return;
             if (item.x > sx + sw || item.x + item.w < sx) return;
             if (item.y > sy + sh || item.y + item.h < sy) return;
-            target.drawImage(item.image, item.x, item.y, item.w, item.h);
+            const origem = cropSourceRect(item, item.image);
+            target.drawImage(item.image, origem.sx, origem.sy, origem.sw, origem.sh,
+                             item.x, item.y, item.w, item.h);
         });
     } else if (bgImage) {
         target.drawImage(bgImage, sx, sy, sw, sh, sx, sy, sw, sh);
@@ -4138,7 +4548,7 @@ function cloneEditionItem(item) {
     // A imagem em si é reaproveitada (mesmo objeto Image); o canvas de pré-visualização
     // usado no arraste não pode ser compartilhado entre cópias, então fica de fora.
     const {proxy, proxyWidth, proxyHeight, ...rest} = item;
-    return {...rest};
+    return rest.crop ? {...rest, crop: {...rest.crop}} : {...rest};
 }
 
 function activeHomeAnnotations() {
@@ -4170,10 +4580,14 @@ function stateSignature() {
             ? shape.points.map(point => `${Math.round(point.x)},${Math.round(point.y)}`).join(";")
             : ""
     ].join("|"));
-    const items = editionItems.map(item => [
-        item.name || "", Math.round(item.x), Math.round(item.y),
-        Math.round(item.w), Math.round(item.h)
-    ].join("|"));
+    const items = editionItems.map(item => {
+        const recorte = itemCrop(item);
+        return [
+            item.name || "", Math.round(item.x), Math.round(item.y),
+            Math.round(item.w), Math.round(item.h),
+            [recorte.x, recorte.y, recorte.w, recorte.h].map(v => v.toFixed(4)).join(",")
+        ].join("|");
+    });
     return `${shapes.join("\n")}##${items.join("\n")}`;
 }
 
@@ -4473,6 +4887,16 @@ window.addEventListener("wheel", event => {
 }, {capture: true, passive: false});
 
 window.addEventListener("keydown", event => {
+    if (editionMenu && (event.key === "Escape" || event.key === "Enter")) {
+        event.preventDefault();
+        closeEditionImageMenu();
+        return;
+    }
+    if (editionCropIndex >= 0 && (event.key === "Enter" || event.key === "Escape")) {
+        event.preventDefault();
+        endEditionCrop(event.key === "Enter");
+        return;
+    }
     if (event.key === "Escape") {
         if (activeFormatPopover) {
             event.preventDefault();

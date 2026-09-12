@@ -852,6 +852,199 @@ def main():
         })()""")
         print("OK: imagens da guia Edicao encaixam em borda e centro, com linha de referencia")
 
+        # --- vao igual entre imagens, como no PowerPoint ---
+        # A folha e as posicoes sao escolhidas para nenhum alvo de ALINHAMENTO
+        # cair perto dos alvos de espacamento: senao o alinhamento venceria e o
+        # teste passaria pelo motivo errado.
+        check("""(() => {
+            const modoAntes = workspaceMode, itensAntes = editionItems;
+            const larguraAntes = docWidth, alturaAntes = docHeight;
+            try {
+                workspaceMode = 'edition';
+                docWidth = 2000; docHeight = 1100;
+                // Duas fixas com 100 px de vao entre elas (700..800).
+                editionItems = [{x: 500, y: 300, w: 200, h: 150},
+                                {x: 800, y: 300, w: 200, h: 150},
+                                {x: 1500, y: 700, w: 200, h: 150}];
+                const movel = editionItems[2];
+                const t = editionSnapTolerance();
+
+                // Repetindo o vao depois da segunda: 1000 + 100 = 1100.
+                moveEditionItem(movel, 1100 + t * 0.5, 700);
+                if (Math.abs(movel.x - 1100) > 1e-6) return 'depois de B: ' + movel.x;
+                const marcas = editionGuides.filter(g => g.vao && g.eixo === 'x');
+                // Duas marcas: o vao que ja existia e o que acabou de casar.
+                if (marcas.length !== 2) return 'marcas: ' + JSON.stringify(editionGuides);
+                const larguras = marcas.map(m => Math.round(m.ate - m.de)).sort();
+                if (larguras[0] !== 100 || larguras[1] !== 100) return 'larguras: ' + larguras;
+                // A marca sai na altura do meio da imagem arrastada.
+                if (Math.abs(marcas[0].em - (movel.y + movel.h / 2)) > 1e-6) return 'altura da marca';
+
+                // Repetindo o vao antes da primeira: 500 - 100 - 200 = 200.
+                moveEditionItem(movel, 200 - t * 0.5, 700);
+                if (Math.abs(movel.x - 200) > 1e-6) return 'antes de A: ' + movel.x;
+                if (editionGuides.filter(g => g.vao).length !== 2) return 'marcas antes de A';
+
+                // No meio de um vao largo, com as duas folgas iguais.
+                editionItems = [{x: 500, y: 300, w: 200, h: 150},
+                                {x: 1200, y: 300, w: 200, h: 150},
+                                {x: 1700, y: 700, w: 200, h: 150}];
+                const meio = editionItems[2];
+                // Vao de 700 a 1200 para uma imagem de 200: sobra 250 de cada
+                // lado, entao ela comeca em 850.
+                moveEditionItem(meio, 850 + t * 0.5, 700);
+                if (Math.abs(meio.x - 850) > 1e-6) return 'meio: ' + meio.x;
+                if (editionGuides.filter(g => g.vao).length !== 2) return 'marcas do meio';
+
+                // Longe de qualquer repeticao nao inventa marca nenhuma.
+                moveEditionItem(meio, 1020, 700);
+                if (editionGuides.length) return 'inventou: ' + JSON.stringify(editionGuides);
+
+                // Alinhar tem preferencia: com uma borda ao alcance, e ela que
+                // manda, e a marca que aparece e a linha, nao o vao.
+                editionItems = [{x: 500, y: 300, w: 200, h: 150},
+                                {x: 800, y: 300, w: 200, h: 150},
+                                {x: 1500, y: 700, w: 200, h: 150}];
+                const disputa = editionItems[2];
+                moveEditionItem(disputa, 800 + t * 0.3, 700);
+                if (Math.abs(disputa.x - 800) > 1e-6) return 'alinhamento: ' + disputa.x;
+                if (!editionGuides.some(g => !g.vao && g.vertical)) return 'faltou a linha';
+                return editionGuides.some(g => g.vao) ? 'vao junto com linha' : true;
+            } finally {
+                workspaceMode = modoAntes;
+                editionItems = itensAntes;
+                docWidth = larguraAntes; docHeight = alturaAntes;
+                editionGuides = [];
+            }
+        })() === true""")
+        print("OK: imagens repetem o vao das vizinhas e a marca do espaco aparece")
+
+        # --- corte de uma imagem da guia Edicao ---
+        js("""
+            window.imagemDeTeste = (() => {
+                const c = document.createElement('canvas');
+                c.width = 400; c.height = 300;
+                const p = c.getContext('2d');
+                p.fillStyle = '#107C41'; p.fillRect(0, 0, 400, 300);
+                p.fillStyle = '#C00000'; p.fillRect(0, 0, 200, 150);
+                const img = new Image();
+                img.src = c.toDataURL();
+                return img;
+            })();
+        """)
+        wait(lambda: js("Boolean(imagemDeTeste.naturalWidth)"))
+        check("""(() => {
+            const modoAntes = workspaceMode, itensAntes = editionItems;
+            const larguraAntes = docWidth, alturaAntes = docHeight;
+            const anotacoesAntes = annotations;
+            try {
+                workspaceMode = 'edition';
+                docWidth = 1600; docHeight = 1000;
+                annotations = [];
+                editionItems = [{x: 200, y: 200, w: 400, h: 300, image: imagemDeTeste}];
+                selectedEditionItemIndex = 0;
+                historyStack.length = 0; redoStack.length = 0;
+
+                if (itemIsCropped(editionItems[0])) return false;
+                if (!beginEditionCrop(0)) return false;
+                const item = editionItems[0];
+
+                // A alca da direita puxa a borda para dentro: fica a metade
+                // esquerda da imagem, e o resto continua guardado.
+                resizeEditionCrop(item, 'e', {x: 400, y: 0});
+                if (Math.abs(item.w - 200) > 1e-6) return false;
+                if (Math.abs(itemCrop(item).w - 0.5) > 1e-6) return false;
+                if (Math.abs(itemCrop(item).x) > 1e-6) return false;
+                // A imagem inteira continua ocupando o mesmo lugar de antes.
+                const quadro = itemFullFrame(item);
+                if (Math.abs(quadro.x - 200) > 1e-6 || Math.abs(quadro.w - 400) > 1e-6) return false;
+
+                // A alca de cima apara por cima.
+                resizeEditionCrop(item, 'n', {x: 0, y: 350});
+                if (Math.abs(item.y - 350) > 1e-6) return false;
+                if (Math.abs(itemCrop(item).y - 0.5) > 1e-6) return false;
+                if (Math.abs(itemCrop(item).h - 0.5) > 1e-6) return false;
+
+                // A alca nao passa da imagem inteira nem some com o pedaco.
+                resizeEditionCrop(item, 'e', {x: 5000, y: 0});
+                if (item.x + item.w > quadro.x + quadro.w + 1e-6) return false;
+                resizeEditionCrop(item, 'e', {x: -5000, y: 0});
+                if (item.w < CROP_MIN - 1e-6) return false;
+
+                // O pedaco desenhado sai da parte certa da imagem.
+                resizeEditionCrop(item, 'e', {x: 400, y: 0});
+                const origem = cropSourceRect(item, imagemDeTeste);
+                if (Math.abs(origem.sw - 200) > 1e-6) return false;
+                if (Math.abs(origem.sy - 150) > 1e-6) return false;
+
+                // Sair do modo fecha uma transacao so, nao uma por alca.
+                endEditionCrop(true);
+                if (editionCropIndex !== -1) return false;
+                if (historyStack.length !== 1) return false;
+                if (!itemIsCropped(editionItems[0])) return false;
+
+                // Desfazer devolve a imagem inteira.
+                undoAnnotation();
+                if (itemIsCropped(editionItems[0])) return false;
+
+                // ESC no meio do corte volta ao enquadramento de antes e nao
+                // deixa entulho no historico.
+                historyStack.length = 0; redoStack.length = 0;
+                beginEditionCrop(0);
+                resizeEditionCrop(editionItems[0], 'e', {x: 380, y: 0});
+                endEditionCrop(false);
+                if (itemIsCropped(editionItems[0])) return false;
+                if (historyStack.length !== 0) return false;
+
+                // E Restaurar devolve a imagem inteira no lugar dela.
+                beginEditionCrop(0);
+                resizeEditionCrop(editionItems[0], 'e', {x: 400, y: 0});
+                endEditionCrop(true);
+                if (!itemIsCropped(editionItems[0])) return false;
+                resetEditionCrop(0);
+                const voltou = editionItems[0];
+                return !itemIsCropped(voltou) && Math.abs(voltou.x - 200) < 1e-6
+                    && Math.abs(voltou.w - 400) < 1e-6 && Math.abs(voltou.h - 300) < 1e-6;
+            } finally {
+                editionCropIndex = -1;
+                editionCropBefore = null;
+                workspaceMode = modoAntes;
+                editionItems = itensAntes;
+                annotations = anotacoesAntes;
+                selectedEditionItemIndex = -1;
+                docWidth = larguraAntes; docHeight = alturaAntes;
+            }
+        })()""")
+        print("OK: corte por imagem apara, guarda o resto, e um desfazer so e volta com Restaurar")
+
+        # --- o menu do botao direito abre sobre a imagem ---
+        check("""(() => {
+            const modoAntes = workspaceMode, itensAntes = editionItems;
+            try {
+                workspaceMode = 'edition';
+                editionItems = [{x: 200, y: 200, w: 400, h: 300, image: imagemDeTeste}];
+                showEditionImageMenu(0, 120, 120);
+                const aberto = document.querySelector('.image-menu');
+                if (!aberto) return false;
+                const rotulos = [...aberto.querySelectorAll('button')].map(b => b.textContent.trim());
+                // Sem corte ainda, "Restaurar" nao faz sentido e nao aparece.
+                if (rotulos.length !== 2) return false;
+                if (!rotulos[0].includes('Cortar imagem')) return false;
+                editionItems[0].crop = {x: 0, y: 0, w: 0.5, h: 1};
+                showEditionImageMenu(0, 120, 120);
+                const comCorte = [...document.querySelectorAll('.image-menu button')]
+                    .map(b => b.textContent.trim());
+                closeEditionImageMenu();
+                return comCorte.length === 3 && comCorte[1].includes('Restaurar')
+                    && !document.querySelector('.image-menu');
+            } finally {
+                workspaceMode = modoAntes;
+                editionItems = itensAntes;
+                closeEditionImageMenu();
+            }
+        })()""")
+        print("OK: menu do botao direito com Cortar, Restaurar (so quando cortada) e Remover")
+
         # --- com zoom alto a rolagem alcanca os quatro lados ---
         js("fitToWorkspace()")
         QTest.qWait(150)
