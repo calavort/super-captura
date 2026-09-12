@@ -30,10 +30,18 @@ const strokeWidths = {Caneta: 4, MarcaTexto: 16};
 const toolSizes = {Texto: 28, Chamada: 24, CotaLivre: 22, CotaAngulo: 22, Seta: 22, Balao: 28, Revisao: 28, Nuvem: 9};
 // A setinha dos menus: o mesmo triângulo cheio dos seletores do programa.
 const CARET_SVG = '<svg class="caret-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg>';
+const PIN_SVG = '<svg class="pin-glyph" viewBox="0 0 24 24" aria-hidden="true">'
+    + '<path d="M16 9V4h1c.55 0 1-.45 1-1s-.45-1-1-1H7c-.55 0-1 .45-1 1s.45 1 1 1h1v5'
+    + 'c0 1.66-1.34 3-3 3v2h5.97v7l1 1 1-1v-7H19v-2c-1.66 0-3-1.34-3-3z"/></svg>';
 const sizeLabels = {Texto: "Fonte", Chamada: "Fonte", CotaLivre: "Fonte", CotaAngulo: "Fonte", Seta: "Ponta", Balao: "Balão", Revisao: "Triângulo", Nuvem: "Raio"};
 let recentColors = [];
 let activeFormatPopover = null;
 let formatPopoverAnchor = null;
+// O menu flutuante fecha sozinho ao primeiro clique fora, e e justamente isso
+// que atrapalha quem esta usando ele para ajustar uma marcacao atras da outra. A
+// taxinha ao lado do X prende o menu: preso, ele so sai pelo X. Arrastar pelo
+// titulo continua valendo - prender nao e travar no lugar, e so nao fechar.
+let popoverPinned = false;
 let selectedIndex = -1;
 let interactionMode = null;
 let dragOffset = {x: 0, y: 0};
@@ -49,12 +57,91 @@ const selectionTools = new Set(["Mover", "Transparencia", "Rotacionar"]);
 // abre o ajuste. Por isso nao ganham a setinha ao lado - clicar no icone ja faz
 // o que a seta fazia, e uma seta que repete o botao so confunde.
 const menuOnlyTools = new Set(["Transparencia", "Rotacionar"]);
+// A Moldura nao e um modo de desenho: e uma ACAO. Desenhar um retangulo em volta
+// da figura ja e o Retangulo - e com o mouse nunca sairia encostado na borda
+// nem acompanhando o giro dela. Aqui o botao aplica o contorno na hora, no que
+// estiver selecionado, e a ferramenta em uso nem muda.
+const commandTools = new Set(["Moldura"]);
 // Alinhar só faz sentido onde o texto vira várias linhas: a caixa de Texto e a
 // chamada. No balão, no triângulo e nas cotas o texto é um valor só, já centrado
 // no lugar dele — por isso os botões apagam nessas ferramentas.
 const TEXT_ALIGNS = ["left", "center", "right"];
 const alignAwareTools = new Set(["Texto", "Chamada"]);
-const boxResizeTools = new Set(["Retangulo", "Circulo", "Cobrir", "Nuvem", "Texto"]);
+// A moldura e um retangulo com um atalho: clicar sem arrastar contorna a imagem
+// inteira. Fora isso ela vive nos mesmos caminhos do retangulo - mesma alca,
+// mesmo clique, mesma caixa.
+const boxResizeTools = new Set(["Retangulo", "Moldura", "Circulo", "Cobrir", "Nuvem", "Texto"]);
+// Quem aceita tipo de traco. O tracejado da "peca invisivel", a linha de centro
+// do desenho tecnico e o pontilhado sao dessas duas; nas outras marcacoes o
+// traco cheio e o que se espera.
+const dashTools = new Set(["Linha", "LinhaOrto"]);
+const LINE_DASH_STYLES = [
+    {id: "solida", rotulo: "Contínua"},
+    {id: "tracejada", rotulo: "Tracejada"},
+    {id: "centro", rotulo: "Linha de centro"},
+    {id: "pontilhada", rotulo: "Pontilhada"}
+];
+let lineDashStyle = "solida";
+
+// O padrao e medido na espessura do traco, nao em pixels fixos: assim a
+// tracejada continua com a mesma cara num traco fino e num grosso.
+function lineDashPattern(estilo, espessura) {
+    const t = Math.max(1, Number(espessura) || 4);
+    switch (estilo) {
+        case "tracejada": return [t * 4, t * 2.4];
+        // Traco quase nulo com ponta redonda: o que sai e um ponto redondo.
+        case "pontilhada": return [t * 0.01, t * 2.2];
+        case "centro": return [t * 7, t * 2.2, t * 1.5, t * 2.2];
+        default: return [];
+    }
+}
+
+function applyLineDash(context, shape) {
+    if (!dashTools.has(shape.type)) return;
+    context.setLineDash(lineDashPattern(shape.dash, shape.thick));
+}
+
+// A amostra do menu: a mesma conta do desenho, numa espessura fixa de 2.
+function lineDashSample(estilo) {
+    const padrao = lineDashPattern(estilo, 2).join(" ");
+    return '<svg class="dash-sample" viewBox="0 0 110 10" aria-hidden="true">'
+        + '<line x1="2" y1="5" x2="108" y2="5" stroke="currentColor" stroke-width="2"'
+        + ' stroke-linecap="round"' + (padrao ? ' stroke-dasharray="' + padrao + '"' : "")
+        + "/></svg>";
+}
+
+// O tipo vem da marcacao selecionada quando ha uma dela; senao, do que esta
+// escolhido para a proxima.
+// A espessura sai da marcacao selecionada quando ha uma; senao, do campo da
+// faixa - que e o mesmo valor, so que escrito noutro lugar.
+function clampStrokeThick(valor) {
+    const numero = Math.round(Number(valor));
+    if (!Number.isFinite(numero)) return 4;
+    return Math.max(1, Math.min(20, numero));
+}
+
+function toolConfigThick() {
+    const selecionada = annotations[selectedIndex];
+    if (selecionada && Number(selecionada.thick) > 0) return clampStrokeThick(selecionada.thick);
+    return clampStrokeThick(byId("cfg-espessura").value);
+}
+
+function applyToolConfigThick(valor) {
+    byId("cfg-espessura").value = clampStrokeThick(valor);
+    handleFormatControlChanged();
+}
+
+function toolConfigDash(tool) {
+    const selecionada = annotations[selectedIndex];
+    if (selecionada && selecionada.type === tool && selecionada.dash) return selecionada.dash;
+    return lineDashStyle;
+}
+
+function setLineDashStyle(estilo) {
+    if (!LINE_DASH_STYLES.some(item => item.id === estilo)) return;
+    lineDashStyle = estilo;
+    handleFormatControlChanged();
+}
 const strokeResizeTools = new Set(["Caneta", "MarcaTexto"]);
 // A cota livre e a cota de angulo tambem ganham alcas nas pontas: depois de
 // desenhadas da para mudar comprimento e angulo sem refazer a marcacao.
@@ -88,6 +175,63 @@ let editionAnnotations = [];
 let editionItems = [];
 let editionCanvasSize = {width: 1600, height: 1000};
 let selectedEditionItemIndex = -1;
+// Ctrl+clique junta imagens na selecao. A imagem PRINCIPAL continua sendo a
+// selectedEditionItemIndex - e ela que tem alca, que o menu do botao direito
+// pega e que o corte usa. Esta lista e a selecao inteira, a principal incluida;
+// mover, apagar, copiar e empurrar com as setas valem para todas.
+let editionSelection = [];
+
+// Rede de seguranca: muito caminho antigo mexe direto no indice principal (todo
+// "selectedEditionItemIndex = -1" por ai). Em vez de caçar um por um, a lista
+// segue o principal sempre que os dois se separam - e uma selecao fantasma nunca
+// sobrevive a um quadro.
+function syncEditionSelection() {
+    editionSelection = editionSelection.filter(indice => indice >= 0 && indice < editionItems.length);
+    if (selectedEditionItemIndex < 0) editionSelection = [];
+    else if (!editionSelection.includes(selectedEditionItemIndex)) editionSelection = [selectedEditionItemIndex];
+}
+
+// Toda troca de selecao passa por aqui, para os dois nao se separarem.
+function setEditionSelection(indices, principal = null) {
+    editionSelection = [...new Set(indices)].filter(indice => indice >= 0 && indice < editionItems.length);
+    if (principal !== null && editionSelection.includes(principal)) selectedEditionItemIndex = principal;
+    else selectedEditionItemIndex = editionSelection.length ? editionSelection[editionSelection.length - 1] : -1;
+}
+
+// A selecao em ordem, pronta para percorrer. De tras para frente quando se vai
+// remover: apagar por indice mexe nos indices seguintes.
+function selectedEditionIndices(decrescente = false) {
+    syncEditionSelection();
+    const lista = [...editionSelection].sort((a, b) => a - b);
+    return decrescente ? lista.reverse() : lista;
+}
+
+function selectedEditionItemsList() {
+    return selectedEditionIndices().map(indice => editionItems[indice]).filter(Boolean);
+}
+
+function isEditionSelected(index) {
+    return editionSelection.includes(index);
+}
+
+// Ctrl+clique: entra na selecao, ou sai dela se ja estava.
+function toggleEditionSelection(index) {
+    syncEditionSelection();
+    const lugar = editionSelection.indexOf(index);
+    if (lugar >= 0) {
+        const restante = editionSelection.filter((_, posicao) => posicao !== lugar);
+        setEditionSelection(restante);
+    } else {
+        setEditionSelection([...editionSelection, index], index);
+    }
+    return editionSelection.length;
+}
+
+function editionSelectionStatus() {
+    const quantas = editionSelection.length;
+    if (!quantas) return "Nenhuma imagem selecionada.";
+    return quantas === 1 ? "1 imagem selecionada." : `${quantas} imagens selecionadas.`;
+}
 let pendingCaptureTarget = "home";
 let redrawPending = false;
 // Tamanho do documento (a imagem capturada ou a página da guia Edição), em
@@ -332,6 +476,12 @@ function applySettings(settings) {
     setInputValue("cfg-fonte", toolSizes.Texto);
     setInputValue("cfg-numero", appSettings.number ?? 1);
     cloudFreeMode = Boolean(appSettings.cloud_free);
+    if (SPECIAL_CROP_FITS.includes(appSettings.special_crop_fit)) {
+        specialCropFit = appSettings.special_crop_fit;
+    }
+    if (LINE_DASH_STYLES.some(estilo => estilo.id === appSettings.line_dash)) {
+        lineDashStyle = appSettings.line_dash;
+    }
     const savedSequence = appSettings.auto_sequence;
     if (savedSequence && typeof savedSequence === "object") {
         autoSequence = {Balao: savedSequence.Balao !== false, Revisao: savedSequence.Revisao !== false};
@@ -373,6 +523,8 @@ function readPreferences() {
         tool_sizes: {...toolSizes},
         number: String(byId("cfg-numero").value || "1"),
         cloud_free: cloudFreeMode,
+        special_crop_fit: specialCropFit,
+        line_dash: lineDashStyle,
         auto_sequence: {...autoSequence},
         balloon_fill: byId("cfg-balao-fill") ? byId("cfg-balao-fill").checked : true,
         balloon_line: byId("cfg-balao-line") ? byId("cfg-balao-line").checked : false,
@@ -464,6 +616,10 @@ function requestCaptureToEdition(kind) {
 
 function pasteImageFromClipboard() {
     setWorkspaceMode("edition");
+    // Mesma ordem do Ctrl+V: o que foi copiado aqui dentro vem primeiro, e vem
+    // solto. Antes este botao ia direto para a area do Windows, onde so existe a
+    // folha achatada - e duas imagens copiadas voltavam como uma so.
+    if (elementClipboard && pasteCopiedElement()) return;
     if (pyBridge && typeof pyBridge.pasteClipboardImageToEdition === "function") {
         pyBridge.pasteClipboardImageToEdition();
         return;
@@ -533,6 +689,12 @@ function manterSelecaoAoTrocar(tool) {
 document.querySelectorAll(".tool-btn").forEach(button => {
     const tool = button.dataset.tool;
     button.addEventListener("click", () => {
+        // Comando: faz e pronto. Trocar de ferramenta aqui limparia a selecao,
+        // que e justamente o alvo do comando.
+        if (commandTools.has(tool)) {
+            aplicarMoldura();
+            return;
+        }
         if (selectionTools.has(tool) && selectionTools.has(currentTool)) {
             manterSelecaoAoTrocar(tool);
         } else {
@@ -644,6 +806,7 @@ function applyCurrentFormattingToSelection() {
         shape.font = options.font;
         invalidateShapeBounds(shape);
     }
+    if (dashTools.has(shape.type)) shape.dash = options.dash;
     if (isTextEditable(shape)) {
         shape.bold = options.bold;
         shape.italic = options.italic;
@@ -760,6 +923,7 @@ function setWorkspaceMode(mode) {
         return;
     }
     finishActiveCommand(true);
+    cancelSpecialCrop();
     if (workspaceMode === "home") {
         homeBgImage = bgImage;
         homeAnnotations = annotations;
@@ -917,6 +1081,7 @@ function expandEditionCanvasToFit(item) {
 
 function clearEdition() {
     finishActiveCommand(true);
+    cancelSpecialCrop();
     pushHistory();
     editionItems = [];
     editionAnnotations = [];
@@ -940,8 +1105,10 @@ function findEditionItemAt(x, y) {
         if (Math.abs(ponto.x - handle.x) <= 14 && Math.abs(ponto.y - handle.y) <= 14) {
             return {index, handle: "resize"};
         }
-        if (ponto.x >= item.x && ponto.x <= item.x + item.w
-            && ponto.y >= item.y && ponto.y <= item.y + item.h) {
+        // A moldura faz parte da imagem: clicar nela e pegar a imagem.
+        const folga = itemFrame(item) ? itemFrame(item).thick : 0;
+        if (ponto.x >= item.x - folga && ponto.x <= item.x + item.w + folga
+            && ponto.y >= item.y - folga && ponto.y <= item.y + item.h + folga) {
             return {index, handle: "move"};
         }
     }
@@ -1001,6 +1168,28 @@ function editionSnapTolerance() {
     return screenUnits(6);
 }
 
+// Encaixada a imagem, TODA referencia que tiver caido em cima de um alvo vira
+// linha - nao apenas a que venceu o encaixe.
+//
+// Era daqui que vinha a linha de baixo faltando. As tres referencias (inicio,
+// meio e fim) disputam o mesmo encaixe, e ao alinhar duas imagens da MESMA
+// altura as tres caem juntas, empatadas ao mesmo alvo. O desempate ficava sempre
+// com a primeira tentada, que e o topo: a base alinhava de verdade, mas nunca
+// ganhava o tracejado que mostra isso. Agora as coincidentes aparecem todas,
+// como no PowerPoint.
+function editionGuideLines(start, size, targets, vertical) {
+    const linhas = [];
+    [0, size / 2, size].forEach(offset => {
+        const referencia = start + offset;
+        targets.forEach(target => {
+            if (Math.abs(referencia - target) > 0.01) return;
+            if (linhas.some(linha => Math.abs(linha.at - target) <= 0.01)) return;
+            linhas.push({vertical, at: target});
+        });
+    });
+    return linhas;
+}
+
 // Espacamento igual, a outra metade do que o PowerPoint faz: alem de alinhar
 // bordas, a imagem arrastada procura repetir um vao que ja existe entre as
 // outras. Tres jeitos de repetir, e e o mais proximo que vence:
@@ -1056,8 +1245,8 @@ function moveEditionItem(item, x, y) {
     // As marcas sao desenhadas na altura (ou na largura) do meio da imagem que
     // esta sendo arrastada, entao so podem ser montadas depois dos dois eixos.
     editionGuides = [];
-    if (horizontal) editionGuides.push({vertical: true, at: horizontal.line});
-    if (vertical) editionGuides.push({vertical: false, at: vertical.line});
+    if (horizontal) editionGuides.push(...editionGuideLines(item.x, item.w, targets.vertical, true));
+    if (vertical) editionGuides.push(...editionGuideLines(item.y, item.h, targets.horizontal, false));
     if (vaoX) {
         const meio = item.y + item.h / 2;
         vaoX.vaos.forEach(([de, ate]) => editionGuides.push({vao: true, eixo: "x", de, ate, em: meio}));
@@ -1083,13 +1272,17 @@ function resizeEditionItem(item, point) {
     // pode encaixar: vence a que estiver mais perto do alvo dela.
     if (direita && (!baixo || direita.distance <= baixo.distance)) {
         width = Math.max(minSize, direita.target - item.x);
-        editionGuides.push({vertical: true, at: direita.target});
     } else if (baixo) {
         width = Math.max(minSize, (baixo.target - item.y) / ratio);
-        editionGuides.push({vertical: false, at: baixo.target});
     }
     item.w = width;
     item.h = Math.max(minSize, width * ratio);
+    // Com o tamanho ja definido, as bordas que encostaram em alvo mostram a
+    // linha - a de baixo e a da direita inclusive, quando as duas encaixam.
+    if (direita || baixo) {
+        editionGuides.push(...editionGuideLines(item.x, item.w, targets.vertical, true));
+        editionGuides.push(...editionGuideLines(item.y, item.h, targets.horizontal, false));
+    }
 }
 
 function finalizeEditionItemTransform(item) {
@@ -1170,6 +1363,22 @@ function itemCrop(item) {
     };
 }
 
+// A moldura de uma imagem da Edicao NAO e uma marcacao solta por cima: e um
+// campo da propria imagem, como o recorte. Guardada assim, ela anda, escala,
+// gira, e recortada, copiada, exportada e desfeita junto com a imagem - sem
+// nenhum codigo de "manter as duas grudadas", que seria impossivel de acertar em
+// todos os caminhos. Antes, como marcacao, arrastar a imagem deixava a moldura
+// para tras (e o clique pegava a moldura, nao a imagem).
+function itemFrame(item) {
+    const moldura = item && item.frame;
+    if (!moldura) return null;
+    const cor = String(moldura.color || "");
+    return {
+        color: /^#[0-9a-f]{6}$/i.test(cor) ? cor : "#C00000",
+        thick: clampStrokeThick(moldura.thick)
+    };
+}
+
 function itemIsCropped(item) {
     const recorte = itemCrop(item);
     return recorte.x > 0.0005 || recorte.y > 0.0005 || recorte.w < 0.9995 || recorte.h < 0.9995;
@@ -1205,6 +1414,17 @@ function drawEditionItem(context, item, destino = null) {
     applyShapeTransform(context, itemAsShape(item));
     context.globalAlpha = shapeOpacity(item);
     context.drawImage(source, sx, sy, sw, sh, caixa.x, caixa.y, caixa.w, caixa.h);
+    const moldura = itemFrame(item);
+    if (moldura) {
+        // Meia espessura para FORA: o traco encosta na borda sem cobrir o que a
+        // imagem mostra. Dentro do mesmo save(), entao ele herda o giro dela.
+        const folga = moldura.thick / 2;
+        context.strokeStyle = moldura.color;
+        context.lineWidth = moldura.thick;
+        context.lineJoin = "miter";
+        context.setLineDash([]);
+        context.strokeRect(caixa.x - folga, caixa.y - folga, caixa.w + folga * 2, caixa.h + folga * 2);
+    }
     context.restore();
 }
 
@@ -1340,7 +1560,43 @@ function refreshDrawingControls() {
     updateSizeFieldLabel();
 }
 
-function closeFormatPopover(restoreFocus = false) {
+// Todo menu flutuante usa o mesmo cabecalho: o titulo arrasta, a taxinha prende
+// e o X fecha. Como o menu das ferramentas e redesenhado a cada ajuste, quem
+// monta o cabecalho tambem devolve o estado da taxinha ao lugar.
+function pickerHeadingHtml(titulo) {
+    return '<div class="picker-heading">' + titulo
+        + '<span class="picker-actions">'
+        + '<button class="picker-pin" type="button" aria-pressed="false"'
+        + ' aria-label="Fixar o menu">' + PIN_SVG + "</button>"
+        + '<button class="picker-close" type="button" aria-label="Fechar">&times;</button>'
+        + "</span></div>";
+}
+
+function wirePickerHeading(popover) {
+    const fechar = popover.querySelector(".picker-close");
+    if (fechar) fechar.onclick = () => closeFormatPopover(true, true);
+    const taxinha = popover.querySelector(".picker-pin");
+    if (!taxinha) return;
+    const mostrar = () => {
+        taxinha.setAttribute("aria-pressed", String(popoverPinned));
+        taxinha.classList.toggle("active", popoverPinned);
+        taxinha.title = popoverPinned
+            ? "Preso: o menu só fecha no X. Clique para soltar."
+            : "Fixar: o menu deixa de fechar ao clicar fora.";
+    };
+    mostrar();
+    taxinha.onclick = () => {
+        popoverPinned = !popoverPinned;
+        mostrar();
+    };
+}
+
+// "force" e o fechamento pedido a mao - o X, ou abrir outro menu no lugar deste.
+// Sem ele o pedido e automatico (clique fora, ESC, rolagem da faixa) e um menu
+// preso o recusa. Devolve se fechou mesmo: quem chamou as vezes precisa saber.
+function closeFormatPopover(restoreFocus = false, force = false) {
+    if (popoverPinned && !force) return false;
+    popoverPinned = false;
     popoverMovedTo = null;
     if (activeFormatPopover) activeFormatPopover.hidden = true;
     if (formatPopoverAnchor) {
@@ -1350,6 +1606,7 @@ function closeFormatPopover(restoreFocus = false) {
     activeFormatPopover = null;
     formatPopoverAnchor = null;
     openToolConfig = null;
+    return true;
 }
 
 // Enquanto o menu estiver aberto, a posicao escolhida a mao manda. Ela e
@@ -1365,6 +1622,9 @@ function positionFormatPopover() {
     };
     if (popoverMovedTo) return dentroDaJanela(popoverMovedTo.x, popoverMovedTo.y);
     const anchor = formatPopoverAnchor.getBoundingClientRect();
+    // Menu preso com a guia trocada: o botao que o abriu saiu da tela e a caixa
+    // dele mede zero. Sem isto o menu pularia para o canto superior esquerdo.
+    if (!anchor.width && !anchor.height) return dentroDaJanela(popup.offsetLeft, popup.offsetTop);
     dentroDaJanela(anchor.left, anchor.bottom + 8);
 }
 
@@ -1374,7 +1634,7 @@ function positionFormatPopover() {
 // clicando fora ou no X, como antes.
 function enableFormatPopoverDrag(popup) {
     popup.addEventListener("mousedown", event => {
-        if (!event.target.closest(".picker-heading") || event.target.closest(".picker-close")) return;
+        if (!event.target.closest(".picker-heading") || event.target.closest(".picker-actions")) return;
         event.preventDefault();
         const caixa = popup.getBoundingClientRect();
         const pegaX = event.clientX - caixa.left;
@@ -1393,7 +1653,7 @@ function enableFormatPopoverDrag(popup) {
 }
 
 function openFormatPopover(popup, anchor) {
-    closeFormatPopover();
+    closeFormatPopover(false, true);
     activeFormatPopover = popup;
     formatPopoverAnchor = anchor;
     anchor.setAttribute("aria-expanded", "true");
@@ -1408,7 +1668,11 @@ function setDrawingColor(color) {
     byId("cfg-cor").value = color;
     recentColors = [color, ...recentColors.filter(item => item.toUpperCase() !== color)].slice(0, 10);
     handleFormatControlChanged();
-    closeFormatPopover(true);
+    if (!closeFormatPopover(true)) {
+        document.querySelectorAll("#drawing-color-popover .color-swatch").forEach(celula => {
+            celula.setAttribute("aria-pressed", String(celula.title.toUpperCase() === color));
+        });
+    }
     return true;
 }
 
@@ -1419,7 +1683,7 @@ function initializeDrawingPickers() {
     colors.hidden = true;
     colors.setAttribute("role", "dialog");
     colors.setAttribute("aria-label", "Cores do desenho");
-    colors.innerHTML = `<div class="picker-heading">Cores<button class="picker-close" aria-label="Fechar">×</button></div>
+    colors.innerHTML = pickerHeadingHtml("Cores") + `
         <span class="picker-label">Cores do tema</span><div class="swatch-grid" data-palette="theme"></div>
         <span class="picker-label">Cores padrão</span><div class="swatch-grid" data-palette="standard"></div>
         <span class="picker-label" id="recent-color-label">Recentes</span><div class="swatch-grid" data-palette="recent"></div>
@@ -1511,10 +1775,10 @@ function initializeDrawingPickers() {
     byId("apply-custom-color").onclick = applyHex;
     hexInput.onkeydown = event => { if (event.key === "Enter") { event.preventDefault(); applyHex(); } };
     colors.querySelector("details").addEventListener("toggle", positionFormatPopover);
-    colors.querySelector(".picker-close").onclick = () => closeFormatPopover(true);
+    wirePickerHeading(colors);
     document.querySelectorAll("[data-color-picker]").forEach(button => {
         button.onclick = () => {
-            if (activeFormatPopover === colors && formatPopoverAnchor === button) return closeFormatPopover();
+            if (activeFormatPopover === colors && formatPopoverAnchor === button) return closeFormatPopover(false, true);
             fillPalette("theme", themePalette);
             fillPalette("standard", standard);
             fillPalette("recent", recentColors);
@@ -1547,11 +1811,12 @@ function initializeDrawingPickers() {
         button.setAttribute("aria-expanded", "false");
         wrapper.append(button);
         button.onclick = () => {
-            if (activeFormatPopover === thickness && formatPopoverAnchor === button) return closeFormatPopover();
+            if (activeFormatPopover === thickness && formatPopoverAnchor === button) return closeFormatPopover(false, true);
             const editingSelection = annotations[selectedIndex]?.type === tool;
             if (!editingSelection) { finishActiveCommand(true); selectTool(tool); }
-            thickness.innerHTML = `<div class="picker-heading">${marker ? "Marca-texto" : "Caneta"}<button class="picker-close" aria-label="Fechar">×</button></div><span class="picker-label">Espessura do traço</span><div class="stroke-choices"></div><span class="picker-label">Outros valores: campo Cor / Esp. na faixa.</span>`;
-            thickness.querySelector(".picker-close").onclick = () => closeFormatPopover(true);
+            thickness.innerHTML = pickerHeadingHtml(marker ? "Marca-texto" : "Caneta")
+                + `<span class="picker-label">Espessura do traço</span><div class="stroke-choices"></div><span class="picker-label">Outros valores: campo Cor / Esp. na faixa.</span>`;
+            wirePickerHeading(thickness);
             (marker ? [8,12,16,24,32,48] : [1,2,3,4,6,8,12]).forEach(width => {
                 const choice = document.createElement("button");
                 choice.className = "stroke-choice";
@@ -1559,7 +1824,14 @@ function initializeDrawingPickers() {
                 choice.setAttribute("aria-label", `${width} pixels`);
                 choice.setAttribute("aria-pressed", String(Number(byId("cfg-espessura").value) === width));
                 choice.innerHTML = `<span class="stroke-sample" style="--stroke-size:${marker ? width / 2 : width}px"></span><span>${width} px</span>`;
-                choice.onclick = () => { byId("cfg-espessura").value = width; handleFormatControlChanged(); closeFormatPopover(true); };
+                choice.onclick = () => {
+                    byId("cfg-espessura").value = width;
+                    handleFormatControlChanged();
+                    if (!closeFormatPopover(true)) {
+                        thickness.querySelectorAll(".stroke-choice").forEach(outro =>
+                            outro.setAttribute("aria-pressed", String(outro === choice)));
+                    }
+                };
                 thickness.querySelector(".stroke-choices").append(choice);
             });
             openFormatPopover(thickness, button);
@@ -1574,7 +1846,7 @@ function initializeDrawingPickers() {
     // faixa - anda junto. Se ele ja foi posto a mao noutro lugar, nao ha ancora
     // a seguir: ele so e trazido de volta para dentro da janela.
     window.addEventListener("resize", () => {
-        if (popoverMovedTo) positionFormatPopover();
+        if (popoverMovedTo || popoverPinned) positionFormatPopover();
         else closeFormatPopover();
     });
     document.querySelectorAll(".ribbon-content").forEach(element => element.addEventListener("scroll", () => closeFormatPopover()));
@@ -1767,6 +2039,8 @@ function applyAngle(graus, relativo = false) {
 
 const toolConfigMenus = {
     Seta: {title: "Seta", size: true},
+    Linha: {title: "Linha direta", dash: true, thick: true},
+    LinhaOrto: {title: "Linha ortogonal", dash: true, thick: true},
     Chamada: {title: "Linha de chamada", size: true},
     CotaLivre: {title: "Cota livre", size: true},
     CotaAngulo: {title: "Cota de ângulo", size: true},
@@ -1776,10 +2050,13 @@ const toolConfigMenus = {
     Revisao: {title: "Triângulo de revisão", size: true, fill: "revisao", text: "Revisao"},
     Nuvem: {title: "Nuvem de revisão", size: true, cloud: true},
     Transparencia: {title: "Transparência", opacity: true},
-    Rotacionar: {title: "Rotacionar", rotation: true}
+    Rotacionar: {title: "Rotacionar", rotation: true},
+    Cortar: {title: "Cortar", special: true}
 };
 
-// Cada ferramenta tem a sua faixa de valores; a nuvem é a única diferente.
+// Cada ferramenta tem a sua faixa de valores; a nuvem é a única diferente. O
+// limite continua valendo (o campo recusa o que passa dele), só não fica escrito
+// ao lado: quem ajusta o tamanho não precisa ler a faixa para mexer na setinha.
 const toolConfigLimits = {Nuvem: {min: 3, max: 60}};
 
 function buildToolConfigMenus() {
@@ -1807,7 +2084,7 @@ function buildToolConfigMenus() {
             trigger.setAttribute("aria-expanded", "false");
             wrapper.append(trigger);
             trigger.onclick = () => {
-                if (activeFormatPopover === popover && formatPopoverAnchor === trigger) return closeFormatPopover();
+                if (activeFormatPopover === popover && formatPopoverAnchor === trigger) return closeFormatPopover(false, true);
                 // Abrir o menu já escolhe a ferramenta, a não ser que a marcação
                 // selecionada seja dela — aí o menu edita o que está selecionado.
                 // Transparencia e Rotacionar editam o que ja esta selecionado:
@@ -1835,7 +2112,15 @@ function toolConfigSize(tool) {
 }
 
 function applyToolConfigSize(tool, valor) {
-    byId("cfg-fonte").value = clampToolSize(tool, valor);
+    const tamanho = clampToolSize(tool, valor);
+    if (tool !== formattingTool()) {
+        // Menu preso de uma ferramenta que ja nao e a ativa: o campo da faixa
+        // pertence a outra, entao o valor vai direto para a dona do menu.
+        if (toolSizes[tool] !== undefined) toolSizes[tool] = tamanho;
+        persistPreferences();
+        return;
+    }
+    byId("cfg-fonte").value = tamanho;
     handleFormatControlChanged();
 }
 
@@ -1861,8 +2146,7 @@ function renderToolConfigMenu(popover, tool) {
     const limites = toolConfigLimits[tool] || {min: 8, max: 200};
     popover.setAttribute("aria-label", config.title);
 
-    let html = '<div class="picker-heading">' + config.title
-        + '<button class="picker-close" aria-label="Fechar">&times;</button></div>';
+    let html = pickerHeadingHtml(config.title);
     if (config.size) {
         html += '<span class="picker-label">' + rotulo + '</span>'
             + '<div class="config-size-row">'
@@ -1872,7 +2156,6 @@ function renderToolConfigMenu(popover, tool) {
             + '<span class="config-stepper">'
             + '<button type="button" data-step="1" tabindex="-1" aria-label="Aumentar">&#9650;</button>'
             + '<button type="button" data-step="-1" tabindex="-1" aria-label="Diminuir">&#9660;</button>'
-            + '</span><span class="config-hint">' + limites.min + ' a ' + limites.max
             + '</span></div>';
     }
     if (config.fill) {
@@ -1895,6 +2178,46 @@ function renderToolConfigMenu(popover, tool) {
             + '<span class="material-symbols-outlined">gesture</span><span>À mão livre</span></button></div>'
             + '<div class="config-hint" style="margin-top:8px">À mão livre, termine o risco'
             + ' perto do início para fechar a nuvem.</div>';
+    }
+    if (config.thick) {
+        // O mesmo valor do campo Cor / Esp. da faixa, ao lado do botao: digitar
+        // aqui e digitar la, e com uma linha selecionada os dois a alteram.
+        html += '<span class="picker-label">Espessura do traço</span>'
+            + '<div class="config-size-row">'
+            + '<input class="config-thick" type="number" min="1" max="20" step="1" value="'
+            + toolConfigThick() + '" aria-label="Espessura do traço">'
+            + '<span class="config-stepper">'
+            + '<button type="button" data-espessura="1" tabindex="-1" aria-label="Aumentar">&#9650;</button>'
+            + '<button type="button" data-espessura="-1" tabindex="-1" aria-label="Diminuir">&#9660;</button>'
+            + "</span></div>";
+    }
+    if (config.dash) {
+        const atual = toolConfigDash(tool);
+        html += '<span class="picker-label">Tipo de linha</span><div class="stroke-choices">'
+            + LINE_DASH_STYLES.map(estilo =>
+                '<button class="stroke-choice dash-choice" data-tracado="' + estilo.id
+                + '" aria-pressed="' + (atual === estilo.id) + '">'
+                + '<span class="dash-name">' + estilo.rotulo + "</span>"
+                + lineDashSample(estilo.id) + "</button>").join("")
+            + "</div>";
+    }
+    if (config.special) {
+        const podeUsar = workspaceMode === "edition" && editionItems.length >= 2;
+        html += '<span class="picker-label">Ajuste nas demais imagens</span>'
+            + '<div class="option-choices" role="group" aria-label="Ajuste nas demais imagens">'
+            + '<button class="option-choice" data-encaixe="tamanho" aria-pressed="'
+            + (specialCropFit === "tamanho")
+            + '" title="A imagem maior recebe um quadro do mesmo tamanho do corte da nº 1.">'
+            + SPECIAL_CROP_FIT_ART.tamanho + "<span>Mesmo tamanho</span></button>"
+            + '<button class="option-choice" data-encaixe="proporcao" aria-pressed="'
+            + (specialCropFit === "proporcao")
+            + '" title="A imagem maior recebe o mesmo formato, esticado até caber nela.">'
+            + SPECIAL_CROP_FIT_ART.proporcao + "<span>Mesma proporção</span></button></div>"
+            + '<button type="button" class="config-action" data-corte-especial'
+            + (podeUsar ? "" : " disabled") + ">Cortar especial…</button>"
+            + '<div class="config-hint" style="margin-top:8px">'
+            + (podeUsar ? specialCropFitHint() : "Precisa de duas imagens ou mais na guia Edição.")
+            + "</div>";
     }
     if (config.check) {
         const marcado = byId(config.check.id) && byId(config.check.id).checked;
@@ -1923,7 +2246,7 @@ function renderToolConfigMenu(popover, tool) {
                 + '<span class="config-stepper">'
                 + '<button type="button" data-girar="1" tabindex="-1" aria-label="Mais um grau">&#9650;</button>'
                 + '<button type="button" data-girar="-1" tabindex="-1" aria-label="Menos um grau">&#9660;</button>'
-                + '</span><span class="config-hint">0 a 359</span></div>';
+                + '</span></div>';
         }
         html += '<span class="picker-label">Um quarto de volta</span>'
             + '<div class="option-choices" role="group" aria-label="Girar 90 graus">'
@@ -1945,7 +2268,7 @@ function renderToolConfigMenu(popover, tool) {
             + '<div class="config-hint config-next">' + toolConfigNextHint(config.text, atual) + "</div>";
     }
     popover.innerHTML = html;
-    popover.querySelector(".picker-close").onclick = () => closeFormatPopover(true);
+    wirePickerHeading(popover);
 
     const campoTamanho = popover.querySelector(".config-size");
     if (campoTamanho) {
@@ -1957,6 +2280,38 @@ function renderToolConfigMenu(popover, tool) {
                 applyToolConfigSize(tool, valor);
             };
         });
+    }
+    const campoEspessura = popover.querySelector(".config-thick");
+    if (campoEspessura) {
+        campoEspessura.oninput = () => applyToolConfigThick(campoEspessura.value);
+        popover.querySelectorAll("[data-espessura]").forEach(passo => {
+            passo.onclick = () => {
+                const valor = clampStrokeThick(Number(campoEspessura.value) + Number(passo.dataset.espessura));
+                campoEspessura.value = valor;
+                applyToolConfigThick(valor);
+            };
+        });
+    }
+    popover.querySelectorAll("[data-tracado]").forEach(escolha => {
+        escolha.onclick = () => {
+            setLineDashStyle(escolha.dataset.tracado);
+            renderToolConfigMenu(popover, tool);
+            positionFormatPopover();
+        };
+    });
+    popover.querySelectorAll("[data-encaixe]").forEach(escolha => {
+        escolha.onclick = () => {
+            setSpecialCropFit(escolha.dataset.encaixe);
+            renderToolConfigMenu(popover, tool);
+            positionFormatPopover();
+        };
+    });
+    const gatilhoEspecial = popover.querySelector("[data-corte-especial]");
+    if (gatilhoEspecial) {
+        gatilhoEspecial.onclick = () => {
+            closeFormatPopover(false, true);
+            startSpecialCrop();
+        };
     }
     popover.querySelectorAll("[data-cloud]").forEach(escolha => {
         escolha.onclick = () => {
@@ -2107,7 +2462,8 @@ function getOptions() {
         fillReview: byId("cfg-revisao-fill") ? byId("cfg-revisao-fill").checked : false,
         autoHeight: byId("cfg-texto-auto") ? byId("cfg-texto-auto").checked : true,
         opacity: pendingOpacity,
-        angle: pendingAngle
+        angle: pendingAngle,
+        dash: lineDashStyle
     };
 }
 
@@ -2182,7 +2538,7 @@ function endNudgeBurst() {
     // A folha da guia Edicao so cresce quando o empurrao termina: fazer isso a
     // cada tecla remontaria o canvas dezenas de vezes.
     if (workspaceMode === "edition" && selectedEditionItemIndex >= 0) {
-        finalizeEditionItemTransform(editionItems[selectedEditionItemIndex]);
+        selectedEditionItemsList().forEach(finalizeEditionItemTransform);
     }
     commitHistoryTransaction();
     scheduleClipboardSync();
@@ -2190,15 +2546,20 @@ function endNudgeBurst() {
 
 function nudgeSelection(dx, dy) {
     if (workspaceMode === "edition" && selectedEditionItemIndex >= 0) {
-        const item = editionItems[selectedEditionItemIndex];
-        if (!item) return false;
+        const itens = selectedEditionItemsList();
+        if (!itens.length) return false;
         beginNudgeBurst();
         // Sem encaixe aqui: a seta e o ajuste fino, e travar de tres em tres
         // pixels seria justamente o contrario do que ela serve.
-        item.x += dx;
-        item.y += dy;
+        itens.forEach(item => {
+            item.x += dx;
+            item.y += dy;
+        });
         redraw();
-        setStatus(`Imagem em ${Math.round(item.x)}, ${Math.round(item.y)} px.`);
+        const principal = editionItems[selectedEditionItemIndex];
+        setStatus(itens.length > 1
+            ? `${itens.length} imagens empurradas.`
+            : `Imagem em ${Math.round(principal.x)}, ${Math.round(principal.y)} px.`);
         return true;
     }
     const shape = annotations[selectedIndex];
@@ -2214,6 +2575,7 @@ function nudgeSelection(dx, dy) {
 
 function interruptCommand() {
     closeEditionImageMenu();
+    if (cancelSpecialCrop()) return;
     if (endEditionCrop(true)) return;
     const handled = finishActiveCommand(true);
     selectedIndex = -1;
@@ -2423,7 +2785,13 @@ function finalizeTextEditor(commit = true) {
     if (commit && (kind === "shapeLabel" || text)) {
         pushHistory();
         annotations.push(keepInsideDocument(annotation));
-        selectedIndex = annotations.length - 1;
+        // A linha de chamada ja sai pronta: o mesmo ESC (ou clique) que fecha a
+        // caixa de texto tambem tira as alcas de cima dela. Antes era preciso um
+        // segundo ESC so para isso, e esse segundo ESC ainda largava a
+        // ferramenta - aqui ela continua ativa para a chamada seguinte.
+        const soltarSelecao = annotation.type === "Chamada";
+        selectedIndex = soltarSelecao ? -1 : annotations.length - 1;
+        if (soltarSelecao) refreshDrawingControls();
         setStatus(kind === "shapeLabel" ? "Anotação inserida." : "Texto inserido.");
         scheduleClipboardSync();
     } else {
@@ -2493,6 +2861,21 @@ function finalizeOrthogonalPath(commit = true) {
 // para o cursor certo aparecer.
 let hoverPending = false;
 let hoverPoint = null;
+
+// Na escolha, o ponteiro vira mãozinha sobre as imagens; ao posicionar, vira a
+// cruz de mover em cima do quadro. Sem isso a etapa parece nao aceitar clique.
+function specialCropCursor(point) {
+    if (!specialCrop) return false;
+    if (specialCrop.fase === "escolha") {
+        canvas.style.cursor = findEditionItemAt(point.x, point.y).index >= 0 ? "pointer" : "default";
+        return true;
+    }
+    if (specialCrop.fase === "posicao") {
+        canvas.style.cursor = acharCaixaDoCorteEspecial(point) >= 0 ? "move" : "default";
+        return true;
+    }
+    return false;
+}
 
 function scheduleHoverCursor(point) {
     hoverPoint = point;
@@ -2595,6 +2978,27 @@ canvas.addEventListener("mousedown", event => {
     const point = getMousePos(event);
     const options = getOptions();
 
+    if (specialCrop && specialCrop.fase === "escolha") {
+        alternarImagemDoCorteEspecial(point);
+        return;
+    }
+
+    if (specialCrop && specialCrop.fase === "posicao") {
+        const posicao = acharCaixaDoCorteEspecial(point);
+        if (posicao < 0) {
+            // Clicar fora dos quadros conclui, como no corte de uma imagem so.
+            aplicarCorteEspecial();
+            return;
+        }
+        const registro = specialCrop.caixas[posicao];
+        const item = editionItems[registro.indice];
+        const local = toShapeSpace(itemAsShape(item), point.x, point.y);
+        specialCrop.arrastando = posicao;
+        specialCrop.pega = {x: local.x - registro.caixa.x, y: local.y - registro.caixa.y};
+        isDrawing = true;
+        return;
+    }
+
     if (editionCropIndex >= 0) {
         const girado = toShapeSpace(itemAsShape(editionItems[editionCropIndex] || {}), point.x, point.y);
         const alca = findEditionCropHandle(girado.x, girado.y);
@@ -2633,9 +3037,20 @@ canvas.addEventListener("mousedown", event => {
             syncFormatControlsFromSelection(annotation);
         } else if (workspaceMode === "edition") {
             const imageHit = findEditionItemAt(point.x, point.y);
-            selectedEditionItemIndex = imageHit.index;
-            if (selectedEditionItemIndex >= 0) {
+            if (imageHit.index < 0) {
+                // No vazio, o clique limpa a selecao inteira - a nao ser com
+                // Ctrl, que e justamente quem esta montando a selecao.
+                if (!event.ctrlKey) setEditionSelection([]);
+            } else if (event.ctrlKey) {
                 selectedIndex = -1;
+                toggleEditionSelection(imageHit.index);
+                setStatus(editionSelectionStatus());
+            } else {
+                selectedIndex = -1;
+                // Clicar numa imagem que ja faz parte da selecao nao desmancha a
+                // selecao: e assim que se pega o grupo inteiro para arrastar.
+                if (isEditionSelected(imageHit.index)) setEditionSelection(editionSelection, imageHit.index);
+                else setEditionSelection([imageHit.index]);
                 interactionMode = imageHit.handle === "resize" ? "edition-image-resize" : "edition-image-move";
                 const item = editionItems[selectedEditionItemIndex];
                 dragOffset = {x: point.x - item.x, y: point.y - item.y};
@@ -2643,7 +3058,7 @@ canvas.addEventListener("mousedown", event => {
                 isDrawing = true;
             }
         } else {
-            selectedEditionItemIndex = -1;
+            setEditionSelection([]);
         }
         // Sem marcacao selecionada quem manda na faixa volta a ser a ferramenta.
         if (selectedIndex < 0) refreshDrawingControls();
@@ -2727,10 +3142,24 @@ function handleDrawingPointerMove(event) {
         scheduleRedraw();
         return;
     }
-    if (selectionTools.has(currentTool) && !isDrawing) {
+    if (specialCrop) {
+        if (specialCropCursor(point) && !isDrawing) return;
+    } else if (selectionTools.has(currentTool) && !isDrawing) {
         scheduleHoverCursor(point);
     }
     if (!isDrawing) return;
+
+    if (specialCrop && specialCrop.fase === "posicao" && specialCrop.arrastando >= 0) {
+        const registro = specialCrop.caixas[specialCrop.arrastando];
+        const item = editionItems[registro.indice];
+        if (item) {
+            const local = toShapeSpace(itemAsShape(item), point.x, point.y);
+            moverCaixaDoCorteEspecial(item, registro.caixa,
+                local.x - specialCrop.pega.x, local.y - specialCrop.pega.y);
+        }
+        scheduleRedraw();
+        return;
+    }
 
     if (interactionMode === "edition-crop" && editionCropIndex >= 0) {
         const alvo = editionItems[editionCropIndex];
@@ -2744,7 +3173,18 @@ function handleDrawingPointerMove(event) {
         if (interactionMode === "edition-image-resize") {
             resizeEditionItem(item, point);
         } else {
+            // A imagem principal e a que encaixa; as outras da selecao andam o
+            // mesmo tanto que ela andou, mantendo o arranjo do grupo intacto.
+            const antesX = item.x, antesY = item.y;
             moveEditionItem(item, point.x - dragOffset.x, point.y - dragOffset.y);
+            const dx = item.x - antesX, dy = item.y - antesY;
+            if (dx || dy) {
+                selectedEditionItemsList().forEach(outro => {
+                    if (outro === item) return;
+                    outro.x += dx;
+                    outro.y += dy;
+                });
+            }
         }
         scheduleRedraw();
         return;
@@ -2821,6 +3261,15 @@ window.addEventListener("pointermove", event => {
 function finishDrawing(event) {
     if (!isDrawing) return;
     if (currentTool === "LinhaOrto") return;
+    // Soltar o quadro do corte especial nao conclui nada: a etapa so termina no
+    // Enter ou no clique fora, entao o quadro seguinte ja pode ser arrastado.
+    if (specialCrop && specialCrop.fase === "posicao") {
+        isDrawing = false;
+        specialCrop.arrastando = -1;
+        specialCrop.pega = null;
+        redraw();
+        return;
+    }
     if (interactionMode === "edition-crop") {
         // A transação do corte só fecha ao sair do modo: assim a sessão inteira
         // é um desfazer só, e não um por alça arrastada.
@@ -2832,7 +3281,7 @@ function finishDrawing(event) {
     }
     if (selectionTools.has(currentTool)) {
         if (workspaceMode === "edition" && selectedEditionItemIndex >= 0) {
-            finalizeEditionItemTransform(editionItems[selectedEditionItemIndex]);
+            selectedEditionItemsList().forEach(finalizeEditionItemTransform);
         }
         isDrawing = false;
         interactionMode = null;
@@ -2894,7 +3343,7 @@ canvas.addEventListener("contextmenu", event => {
     event.preventDefault();
     // Na guia Edição, o botão direito sobre uma imagem abre o menu dela; fora
     // disso ele continua sendo o "interromper" de sempre.
-    if (editionCropIndex < 0 && (bgImage || workspaceMode === "edition")) {
+    if (editionCropIndex < 0 && !specialCrop && (bgImage || workspaceMode === "edition")) {
         const ponto = getMousePos(event);
         if (workspaceMode === "edition") {
             const imagem = findEditionItemAt(ponto.x, ponto.y);
@@ -2989,17 +3438,32 @@ function showEditionImageMenu(index, clientX, clientY) {
     const opcoes = [
         {rotulo: "Cortar imagem", icone: "crop", acao: () => beginEditionCrop(index)}
     ];
+    // O especial so aparece quando ha com quem dividir a medida do corte.
+    if (editionItems.length >= 2) {
+        // crop_free e o proprio simbolo de corte em cantoneiras: fica claro que
+        // e parente do "Cortar imagem" logo acima, e nao outra ferramenta.
+        opcoes.push({rotulo: "Cortar especial…", icone: "crop_free", acao: () => startSpecialCrop()});
+    }
     if (itemIsCropped(item)) {
         opcoes.push({rotulo: "Restaurar imagem inteira", icone: "restore", acao: () => resetEditionCrop(index)});
     }
+    if (itemFrame(item)) {
+        opcoes.push({rotulo: "Remover moldura", icone: "check_box_outline_blank",
+                     acao: () => removerMolduraDaImagem(index)});
+    }
     opcoes.push({rotulo: "Transparência…", icone: "opacity", acao: () => abrirMenuDaFerramenta("Transparencia")});
     opcoes.push({rotulo: "Rotacionar…", icone: "rotate_right", acao: () => abrirMenuDaFerramenta("Rotacionar")});
-    opcoes.push({rotulo: "Remover imagem", icone: "delete", acao: () => {
+    // Botao direito numa imagem que faz parte da selecao remove a selecao
+    // inteira, como o Delete. Fora dela, remove so a que foi clicada.
+    const emGrupo = isEditionSelected(index) ? selectedEditionIndices(true) : [index];
+    opcoes.push({rotulo: emGrupo.length > 1 ? `Remover ${emGrupo.length} imagens` : "Remover imagem",
+                 icone: "delete", acao: () => {
         pushHistory();
-        editionItems.splice(index, 1);
-        selectedEditionItemIndex = -1;
+        // De tras para frente: remover por indice mexe nos indices seguintes.
+        emGrupo.forEach(posicao => editionItems.splice(posicao, 1));
+        setEditionSelection([]);
         redraw();
-        setStatus("Imagem removida da edição.");
+        setStatus(emGrupo.length > 1 ? `${emGrupo.length} imagens removidas da edição.` : "Imagem removida da edição.");
         scheduleClipboardSync();
     }});
     montarMenuFlutuante(clientX, clientY, opcoes);
@@ -3087,6 +3551,83 @@ function freezeStrokePoints(shape) {
     return shape;
 }
 
+// O botao Moldura: contorna o que esta selecionado, sem tirar a selecao de cima
+// dele - da para emoldurar e continuar trabalhando com as mesmas imagens. Sai
+// uma moldura POR IMAGEM, nao uma so em volta do grupo: cada uma fica com o
+// contorno dela, encostado na borda e acompanhando o giro dela.
+//
+// A cor e a espessura vem de "options", ou seja, dos campos Cor / Esp. da
+// Formatacao - os mesmos de qualquer outra marcacao. Selecionar uma moldura
+// pronta e mexer nesses campos tambem a altera, pelo caminho de sempre.
+function aplicarMoldura() {
+    finishActiveCommand(true);
+    const opcoes = getOptions();
+    if (workspaceMode === "edition") {
+        const alvos = selectedEditionItemsList();
+        if (!alvos.length) {
+            setStatus(editionItems.length
+                ? "Selecione a imagem que vai receber a moldura (Ctrl+clique junta várias)."
+                : "Não há imagem para emoldurar.");
+            return false;
+        }
+        pushHistory();
+        // A moldura entra NA imagem. Clicar de novo com outra cor ou espessura
+        // troca a que ja esta la, em vez de empilhar uma segunda por cima.
+        alvos.forEach(item => {
+            item.frame = {color: opcoes.color, thick: clampStrokeThick(opcoes.thick)};
+        });
+        redraw();
+        scheduleClipboardSync();
+        setStatus(alvos.length > 1 ? `Moldura em ${alvos.length} imagens.` : "Moldura aplicada à imagem.");
+        return true;
+    }
+    // Na Pagina Inicial nao ha o que selecionar nem o que arrastar: existe uma
+    // captura so, ela nao sai do lugar, e a folha e ela. La a moldura pode ser
+    // uma marcacao comum, que e o que ela sempre foi.
+    if (!bgImage) {
+        setStatus("Abra uma captura para emoldurar.");
+        return false;
+    }
+    pushHistory();
+    annotations.push(keepInsideDocument(molduraDaFolha(opcoes)));
+    redraw();
+    scheduleClipboardSync();
+    setStatus("Moldura em volta da imagem.");
+    return true;
+}
+
+function removerMolduraDaImagem(index) {
+    const item = editionItems[index];
+    if (!item || !itemFrame(item)) return false;
+    pushHistory();
+    delete item.frame;
+    redraw();
+    scheduleClipboardSync();
+    setStatus("Moldura removida.");
+    return true;
+}
+
+// Sem selecao a moldura contorna a folha. Aqui o retangulo nasce recuado meia
+// espessura para DENTRO: encostado na borda, metade do traco cairia fora da
+// folha e sumiria na exportacao.
+function molduraDaFolha(options) {
+    const recuo = Math.max(1, Number(options.thick) || 4) / 2;
+    return {
+        type: "Moldura",
+        ...options,
+        x: recuo,
+        y: recuo,
+        w: Math.max(1, docWidth - recuo * 2),
+        h: Math.max(1, docHeight - recuo * 2),
+        points: [],
+        // Esta moldura e definida pela folha, entao ela sai reta. O giro que
+        // estiver esperando a proxima marcacao nao vale aqui: inclinada, ela
+        // deixaria de emoldurar a imagem - que e a unica coisa que ela faz.
+        // A moldura ARRASTADA e uma marcacao comum e aceita o giro normalmente.
+        angle: 0
+    };
+}
+
 function shapeHasSize(shape) {
     if (strokeResizeTools.has(shape.type)) return shape.points.length > 0;
     if (isFreeCloud(shape)) return Array.isArray(shape.points) && shape.points.length > 2;
@@ -3141,6 +3682,7 @@ function scheduleRedraw() {
 }
 
 function drawEditionWorkspace() {
+    syncEditionSelection();
     ctx.save();
     ctx.clearRect(0, 0, docWidth, docHeight);
     ctx.fillStyle = "#FFFFFF";
@@ -3156,8 +3698,18 @@ function drawEditionWorkspace() {
             drawEditionCropOverlay(item);
             return;
         }
+        const quadroEspecial = specialCropBoxOf(index);
+        if (quadroEspecial) {
+            drawSpecialCropBox(item, quadroEspecial);
+            return;
+        }
         drawEditionItem(ctx, item);
-        if (index === selectedEditionItemIndex) drawEditionImageSelection(item);
+        const ordem = specialCropOrderOf(index);
+        if (ordem >= 0) drawSpecialCropChoice(item, ordem);
+        // So a imagem principal leva a alca de redimensionar: com varias
+        // selecionadas, uma alca em cada uma prometeria um redimensionamento em
+        // grupo que nao existe.
+        else if (isEditionSelected(index)) drawEditionImageSelection(item, index === selectedEditionItemIndex);
     });
     drawEditionGuides();
     annotations.forEach((annotation, index) =>
@@ -3265,6 +3817,11 @@ function beginEditionCrop(index) {
 
 function endEditionCrop(commit = true) {
     if (editionCropIndex < 0) return false;
+    // Na referencia do corte especial, concluir nao encerra nada: leva o tamanho
+    // recortado para as outras imagens. Cancelar ali desmonta o especial inteiro.
+    if (specialCrop && specialCrop.fase === "referencia") {
+        return commit ? specialCropIrParaPosicao() : cancelSpecialCrop();
+    }
     const item = editionItems[editionCropIndex];
     const antes = editionCropBefore;
     editionCropIndex = -1;
@@ -3303,6 +3860,402 @@ function resetEditionCrop(index) {
     setStatus("Imagem inteira de volta.");
     scheduleClipboardSync();
     return true;
+}
+
+// --- Corte especial -----------------------------------------------------
+// O corte comum vale para uma imagem so. O especial faz o contrario: o tamanho
+// recortado na PRIMEIRA imagem escolhida vira a medida das demais, e em cada uma
+// delas so se escolhe ONDE esse quadro cai - o tamanho ja esta decidido. E o que
+// serve para tirar o mesmo pedaco de varias telas parecidas.
+//
+// Ele anda em tres etapas: "escolha" (clicar nas imagens, a primeira e a
+// referencia), "referencia" (as alcas de sempre, na primeira) e "posicao"
+// (arrastar o quadro de cada uma das outras). Enter avanca, ESC desmonta tudo.
+let specialCrop = null;
+
+// Em imagens de tamanhos diferentes o mesmo quadro nem sempre cabe, entao a
+// forma de encaixar precisa ser dita:
+//   tamanho   - o mesmo quadro, nos mesmos pixels da folha (encolhe so se a
+//               imagem for menor que ele, senao o corte pegaria vazio);
+//   proporcao - o mesmo enquadramento, esticado ate o limite de cada imagem.
+const SPECIAL_CROP_FITS = ["tamanho", "proporcao"];
+let specialCropFit = "tamanho";
+
+// A diferenca entre as duas so aparece nas imagens MAIORES que o corte da
+// referencia, e explicar isso por escrito sempre sai comprido. Entao o menu
+// desenha: a esquerda a imagem nº 1 com o corte dela, a direita uma imagem maior
+// com o quadro que aquela opcao produz nela. As medidas do desenho sao as
+// mesmas contas do caixaDoCorteEspecial - a de cima e um quadro de 12x15 numa
+// imagem de 45x31, que na "mesma proporcao" cresce ate encostar em cima e
+// embaixo (fator 31/15, dois por um).
+function specialCropFitArt(caixaDireita) {
+    return '<svg class="fit-art" viewBox="0 0 96 40" aria-hidden="true">'
+        // A referencia, com o corte dela.
+        + '<rect class="fit-img" x="6.5" y="10.5" width="25" height="23"/>'
+        + '<rect class="fit-box" x="10.5" y="14.5" width="12" height="15"/>'
+        + '<path class="fit-arrow" d="M34.5 22h5m0 0l-2-2.2m2 2.2l-2 2.2"/>'
+        // A outra imagem, maior, e o quadro que ela recebe.
+        + '<rect class="fit-img" x="44.5" y="4.5" width="45" height="31"/>'
+        + caixaDireita
+        + "</svg>";
+}
+
+const SPECIAL_CROP_FIT_ART = {
+    // Mesmo tamanho: o quadro chega do mesmo tamanho, sobrando imagem em volta.
+    tamanho: specialCropFitArt('<rect class="fit-box" x="56.5" y="12.5" width="12" height="15"/>'),
+    // Mesma proporcao: mesma forma, esticada ate o limite da imagem.
+    proporcao: specialCropFitArt('<rect class="fit-box" x="54.5" y="4.5" width="25" height="31"/>')
+};
+
+function specialCropFitHint() {
+    return specialCropFit === "proporcao"
+        ? "O quadro acompanha o tamanho de cada imagem."
+        : "O quadro sai do tamanho da primeira.";
+}
+
+// --- Barra de passos ----------------------------------------------------
+// O corte especial anda em tres etapas e avanca com Enter. So que Enter nao se
+// ve, e a instrucao na barra de estado fica no rodape - longe de onde a mao esta
+// clicando. Esta barra fica em cima da area de trabalho dizendo o passo e o que
+// fazer nele, com um botao para avancar.
+//
+// Uma linha curta por passo, de proposito: ela e lida no meio do trabalho, com a
+// mao no mouse. O que o passo faz ja esta na tela (os numeros nas imagens, as
+// alcas, os quadros vermelhos) - a barra so diz o que fazer agora.
+const SPECIAL_CROP_STEPS = {
+    escolha: {
+        passo: 1,
+        texto: "Clique nas imagens. A nº 1 é a referência.",
+        botao: "Continuar"
+    },
+    referencia: {
+        passo: 2,
+        texto: "Recorte a imagem nº 1 pelas alças.",
+        botao: "Aplicar às outras"
+    },
+    posicao: {
+        passo: 3,
+        texto: "Arraste cada quadro vermelho.",
+        botao: "Concluir"
+    }
+};
+
+function updateSpecialCropBar() {
+    const barra = byId("special-crop-bar");
+    if (!barra) return;
+    const etapa = specialCrop ? SPECIAL_CROP_STEPS[specialCrop.fase] : null;
+    if (!etapa) {
+        barra.hidden = true;
+        return;
+    }
+    const escolhidas = specialCrop.indices.length;
+    const faltam = specialCrop.fase === "escolha" && escolhidas < 2;
+    byId("special-crop-step").textContent = `Passo ${etapa.passo} de 3`;
+    byId("special-crop-text").textContent = etapa.texto
+        + (specialCrop.fase === "escolha" ? `  (${escolhidas} de 2+)` : "");
+    const avancar = byId("special-crop-next");
+    avancar.textContent = etapa.botao;
+    avancar.disabled = faltam;
+    // O detalhe fica na dica do botao, para quem parar em cima dele.
+    avancar.title = faltam
+        ? "Escolha ao menos duas imagens: a nº 1 dá a medida do corte, as outras a recebem."
+        : etapa.botao + " — ou aperte Enter.";
+    barra.hidden = false;
+}
+
+function initializeSpecialCropBar() {
+    const avancar = byId("special-crop-next");
+    const cancelar = byId("special-crop-cancel");
+    if (avancar) avancar.onclick = () => specialCropAvancar();
+    if (cancelar) cancelar.onclick = () => cancelSpecialCrop();
+    updateSpecialCropBar();
+}
+
+function setSpecialCropFit(encaixe) {
+    if (!SPECIAL_CROP_FITS.includes(encaixe)) return;
+    specialCropFit = encaixe;
+    persistPreferences();
+    // Trocado no meio do ajuste, os quadros ja abertos sao refeitos na hora.
+    if (specialCrop && specialCrop.fase === "posicao") {
+        specialCrop.caixas = montarCaixasDoCorteEspecial();
+        redraw();
+    }
+}
+
+function startSpecialCrop() {
+    if (workspaceMode !== "edition") {
+        setStatus("O corte especial é das imagens da guia Edição.");
+        return false;
+    }
+    if (editionItems.length < 2) {
+        setStatus("O corte especial precisa de duas imagens ou mais na Edição.");
+        return false;
+    }
+    finishActiveCommand(true);
+    if (editionCropIndex >= 0) endEditionCrop(true);
+    closeEditionImageMenu();
+    selectTool("Mover", false);
+    selectedIndex = -1;
+    selectedEditionItemIndex = -1;
+    specialCrop = {fase: "escolha", indices: [], caixas: null, arrastando: -1, pega: null,
+                   antes: null, medida: null};
+    updateSpecialCropBar();
+    redraw();
+    setStatus("Corte especial: clique nas imagens. A nº 1 é a referência.");
+    return true;
+}
+
+// O corte especial some sem devolver nada, porque quem chama aqui ja esta
+// trocando as imagens inteiras por baixo dele: desfazer, refazer e recuperar a
+// sessao. A transacao pendente vai junto, senao o desfazer seguinte gravaria um
+// estado que nunca existiu.
+function abandonSpecialCrop() {
+    if (!specialCrop) return false;
+    specialCrop = null;
+    editionCropIndex = -1;
+    editionCropBefore = null;
+    interactionMode = null;
+    resizeCorner = null;
+    isDrawing = false;
+    pendingHistorySnapshot = null;
+    updateSpecialCropBar();
+    return true;
+}
+
+function cancelSpecialCrop() {
+    if (!specialCrop) return false;
+    const antes = specialCrop.antes;
+    const referencia = specialCrop.indices[0];
+    specialCrop = null;
+    editionCropIndex = -1;
+    editionCropBefore = null;
+    interactionMode = null;
+    resizeCorner = null;
+    isDrawing = false;
+    // So a referencia chegou a mudar; nas outras o quadro era so um desenho.
+    const item = editionItems[referencia];
+    if (item && antes) {
+        Object.assign(item, {x: antes.x, y: antes.y, w: antes.w, h: antes.h,
+                             crop: antes.crop ? {...antes.crop} : null});
+        item.proxyWidth = 0;
+    }
+    commitHistoryTransaction();
+    updateSpecialCropBar();
+    redraw();
+    setStatus("Corte especial cancelado.");
+    return true;
+}
+
+// Enter: da etapa da escolha para a referencia, da referencia para a posicao e
+// da posicao para o corte aplicado.
+function specialCropAvancar() {
+    if (!specialCrop) return false;
+    if (specialCrop.fase === "escolha") {
+        if (specialCrop.indices.length < 2) {
+            updateSpecialCropBar();
+            setStatus("Escolha ao menos duas imagens.");
+            return true;
+        }
+        const referencia = specialCrop.indices[0];
+        const item = editionItems[referencia];
+        if (!item) return cancelSpecialCrop();
+        specialCrop.fase = "referencia";
+        specialCrop.antes = {x: item.x, y: item.y, w: item.w, h: item.h,
+                             crop: item.crop ? {...item.crop} : null};
+        selectedEditionItemIndex = referencia;
+        editionCropIndex = referencia;
+        editionCropBefore = null;
+        beginHistoryTransaction();
+        updateSpecialCropBar();
+        redraw();
+        setStatus("Corte especial: recorte a imagem nº 1 pelas alças.");
+        return true;
+    }
+    if (specialCrop.fase === "referencia") return specialCropIrParaPosicao();
+    if (specialCrop.fase === "posicao") return aplicarCorteEspecial();
+    return false;
+}
+
+function specialCropIrParaPosicao() {
+    const item = editionItems[specialCrop.indices[0]];
+    if (!item) return cancelSpecialCrop();
+    editionCropIndex = -1;
+    editionCropBefore = null;
+    interactionMode = null;
+    resizeCorner = null;
+    isDrawing = false;
+    // A referencia ja esta recortada: daqui em diante ela e so a medida na tela,
+    // sem alcas de selecao por cima competindo com os quadros das outras.
+    selectedEditionItemIndex = -1;
+    finalizeEditionItemTransform(item);
+    specialCrop.fase = "posicao";
+    specialCrop.medida = {w: item.w, h: item.h};
+    specialCrop.caixas = montarCaixasDoCorteEspecial();
+    if (!specialCrop.caixas.length) return aplicarCorteEspecial();
+    updateSpecialCropBar();
+    redraw();
+    setStatus("Corte especial: arraste cada quadro vermelho para o pedaço que fica.");
+    return true;
+}
+
+// O quadro de uma imagem que nao e a referencia: o tamanho vem da medida dela, e
+// o lugar comeca no meio do pedaco que ja esta aparecendo.
+function caixaDoCorteEspecial(item) {
+    const quadro = itemFullFrame(item);
+    const medida = specialCrop.medida;
+    const cabe = Math.min(quadro.w / medida.w, quadro.h / medida.h);
+    const escala = specialCropFit === "proporcao" ? cabe : Math.min(1, cabe);
+    const w = Math.max(1, medida.w * escala);
+    const h = Math.max(1, medida.h * escala);
+    return {
+        x: Math.min(Math.max(item.x + item.w / 2 - w / 2, quadro.x), quadro.x + Math.max(0, quadro.w - w)),
+        y: Math.min(Math.max(item.y + item.h / 2 - h / 2, quadro.y), quadro.y + Math.max(0, quadro.h - h)),
+        w, h
+    };
+}
+
+function montarCaixasDoCorteEspecial() {
+    return specialCrop.indices.slice(1).map(indice => {
+        const item = editionItems[indice];
+        return item ? {indice, caixa: caixaDoCorteEspecial(item)} : null;
+    }).filter(Boolean);
+}
+
+// O quadro anda dentro da imagem inteira e nunca sai dela: e sempre um pedaco da
+// imagem que esta sendo escolhido, nunca um pedaco de vazio.
+function moverCaixaDoCorteEspecial(item, caixa, x, y) {
+    const quadro = itemFullFrame(item);
+    caixa.x = Math.min(Math.max(x, quadro.x), quadro.x + Math.max(0, quadro.w - caixa.w));
+    caixa.y = Math.min(Math.max(y, quadro.y), quadro.y + Math.max(0, quadro.h - caixa.h));
+}
+
+// Fracao da imagem original, do mesmo jeito que o corte comum guarda.
+function fracaoDoCorteEspecial(item, caixa) {
+    const quadro = itemFullFrame(item);
+    return {
+        x: (caixa.x - quadro.x) / quadro.w,
+        y: (caixa.y - quadro.y) / quadro.h,
+        w: caixa.w / quadro.w,
+        h: caixa.h / quadro.h
+    };
+}
+
+function acharCaixaDoCorteEspecial(point) {
+    if (!specialCrop || specialCrop.fase !== "posicao") return -1;
+    const caixas = specialCrop.caixas || [];
+    // De tras para frente: o quadro desenhado por cima e o primeiro a responder.
+    for (let posicao = caixas.length - 1; posicao >= 0; posicao--) {
+        const item = editionItems[caixas[posicao].indice];
+        if (!item) continue;
+        const local = toShapeSpace(itemAsShape(item), point.x, point.y);
+        const caixa = caixas[posicao].caixa;
+        if (local.x >= caixa.x && local.x <= caixa.x + caixa.w
+            && local.y >= caixa.y && local.y <= caixa.y + caixa.h) return posicao;
+    }
+    return -1;
+}
+
+function aplicarCorteEspecial() {
+    if (!specialCrop || specialCrop.fase !== "posicao") return false;
+    const caixas = specialCrop.caixas || [];
+    const total = caixas.length + 1;
+    specialCrop = null;
+    isDrawing = false;
+    updateSpecialCropBar();
+    caixas.forEach(({indice, caixa}) => {
+        const item = editionItems[indice];
+        if (!item) return;
+        item.crop = fracaoDoCorteEspecial(item, caixa);
+        item.x = caixa.x;
+        item.y = caixa.y;
+        item.w = caixa.w;
+        item.h = caixa.h;
+        item.proxyWidth = 0;
+        finalizeEditionItemTransform(item);
+    });
+    commitHistoryTransaction();
+    redraw();
+    scheduleClipboardSync();
+    setStatus(`Corte especial aplicado em ${total} imagens.`);
+    return true;
+}
+
+// Etapa da escolha: clicar poe a imagem na fila, clicar de novo a tira.
+function alternarImagemDoCorteEspecial(point) {
+    const achado = findEditionItemAt(point.x, point.y);
+    if (achado.index < 0) {
+        setStatus("Clique sobre uma imagem.");
+        return;
+    }
+    const lugar = specialCrop.indices.indexOf(achado.index);
+    if (lugar >= 0) specialCrop.indices.splice(lugar, 1);
+    else specialCrop.indices.push(achado.index);
+    updateSpecialCropBar();
+    redraw();
+    const quantas = specialCrop.indices.length;
+    setStatus(quantas === 1 ? "1 imagem escolhida." : `${quantas} imagens escolhidas.`);
+}
+
+// --- Desenho do corte especial ------------------------------------------
+// Na escolha, um numero no canto diz a ordem (o 1 e a referencia). Na posicao, a
+// imagem inteira fica apagada e o quadro vermelho mostra o pedaco que fica - o
+// mesmo tracejado do corte comum delimita a imagem toda.
+function drawSpecialCropChoice(item, ordem) {
+    ctx.save();
+    applyShapeTransform(ctx, itemAsShape(item));
+    const cor = ordem === 0 ? "#D13438" : "#107C41";
+    ctx.strokeStyle = cor;
+    ctx.lineWidth = screenUnits(2);
+    ctx.strokeRect(item.x, item.y, item.w, item.h);
+    const lado = screenUnits(20);
+    ctx.fillStyle = cor;
+    ctx.fillRect(item.x, item.y, lado, lado);
+    ctx.fillStyle = "#FFFFFF";
+    ctx.font = `${screenUnits(13)}px 'Segoe UI', sans-serif`;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(String(ordem + 1), item.x + lado / 2, item.y + lado / 2);
+    ctx.restore();
+}
+
+function drawSpecialCropBox(item, caixa) {
+    const quadro = itemFullFrame(item);
+    const source = editionRenderSource(item);
+    ctx.save();
+    applyShapeTransform(ctx, itemAsShape(item));
+    if (source) {
+        const largura = source.naturalWidth || source.width;
+        const altura = source.naturalHeight || source.height;
+        ctx.globalAlpha = 0.3;
+        ctx.drawImage(source, quadro.x, quadro.y, quadro.w, quadro.h);
+        ctx.globalAlpha = 1;
+        // O pedaco escolhido volta inteiro por cima do resto apagado.
+        const fracao = fracaoDoCorteEspecial(item, caixa);
+        ctx.drawImage(source,
+            fracao.x * largura, fracao.y * altura,
+            Math.max(1, fracao.w * largura), Math.max(1, fracao.h * altura),
+            caixa.x, caixa.y, caixa.w, caixa.h);
+    }
+    ctx.strokeStyle = "#323130";
+    ctx.lineWidth = screenUnits(1);
+    ctx.setLineDash([screenUnits(5), screenUnits(4)]);
+    ctx.strokeRect(quadro.x, quadro.y, quadro.w, quadro.h);
+    ctx.setLineDash([]);
+    ctx.strokeStyle = "#D13438";
+    ctx.lineWidth = screenUnits(2);
+    ctx.strokeRect(caixa.x, caixa.y, caixa.w, caixa.h);
+    ctx.restore();
+}
+
+function specialCropBoxOf(index) {
+    if (!specialCrop || specialCrop.fase !== "posicao") return null;
+    const registro = (specialCrop.caixas || []).find(item => item.indice === index);
+    return registro ? registro.caixa : null;
+}
+
+function specialCropOrderOf(index) {
+    if (!specialCrop || specialCrop.fase !== "escolha") return -1;
+    return specialCrop.indices.indexOf(index);
 }
 
 function cropHandlePoints(item) {
@@ -3384,7 +4337,7 @@ function drawEditionCropOverlay(item) {
     ctx.restore();
 }
 
-function drawEditionImageSelection(item) {
+function drawEditionImageSelection(item, principal = true) {
     const handle = editionImageHandle(item);
     ctx.save();
     applyShapeTransform(ctx, itemAsShape(item));
@@ -3393,8 +4346,10 @@ function drawEditionImageSelection(item) {
     ctx.setLineDash([7, 4]);
     ctx.strokeRect(item.x - 5, item.y - 5, item.w + 10, item.h + 10);
     ctx.setLineDash([]);
-    ctx.fillStyle = "#F2A100";
-    ctx.fillRect(handle.x - 5, handle.y - 5, 10, 10);
+    if (principal) {
+        ctx.fillStyle = "#F2A100";
+        ctx.fillRect(handle.x - 5, handle.y - 5, 10, 10);
+    }
     ctx.restore();
 }
 
@@ -3423,7 +4378,7 @@ function drawShape(context, shape, selected = false, temporary = false) {
     context.lineJoin = "round";
     context.beginPath();
 
-    if (shape.type === "Retangulo") {
+    if (shape.type === "Retangulo" || shape.type === "Moldura") {
         context.strokeRect(shape.x, shape.y, shape.w, shape.h);
     } else if (shape.type === "Circulo") {
         const rx = Math.abs(shape.w) / 2;
@@ -3431,6 +4386,7 @@ function drawShape(context, shape, selected = false, temporary = false) {
         context.ellipse(shape.x + shape.w / 2, shape.y + shape.h / 2, rx, ry, 0, 0, Math.PI * 2);
         context.stroke();
     } else if (shape.type === "Linha") {
+        applyLineDash(context, shape);
         context.moveTo(shape.x, shape.y);
         context.lineTo(shape.x + shape.w, shape.y + shape.h);
         context.stroke();
@@ -3443,6 +4399,7 @@ function drawShape(context, shape, selected = false, temporary = false) {
     } else if (shape.type === "Chamada") {
         drawCallout(context, shape);
     } else if (shape.type === "LinhaOrto") {
+        applyLineDash(context, shape);
         if (Array.isArray(shape.points) && shape.points.length) {
             context.moveTo(shape.points[0].x, shape.points[0].y);
             shape.points.slice(1).forEach(point => context.lineTo(point.x, point.y));
@@ -4905,6 +5862,7 @@ function shapeHitsPoint(shape, x, y) {
             return pointAngle >= Math.min(0, endAngle) - 0.06 && pointAngle <= Math.max(0, endAngle) + 0.06;
         }
         case "Retangulo":
+        case "Moldura":
             return pointNearRectBorder(x, y, normalizedRect(shape), tolerance);
         case "Nuvem":
             if (isFreeCloud(shape)) return pointNearPolyline(shape.points, x, y, tolerance + cloudRadius(shape) * 1.4);
@@ -5042,7 +6000,10 @@ function cloneEditionItem(item) {
     // A imagem em si é reaproveitada (mesmo objeto Image); o canvas de pré-visualização
     // usado no arraste não pode ser compartilhado entre cópias, então fica de fora.
     const {proxy, proxyWidth, proxyHeight, ...rest} = item;
-    return rest.crop ? {...rest, crop: {...rest.crop}} : {...rest};
+    const copia = {...rest};
+    if (rest.crop) copia.crop = {...rest.crop};
+    if (rest.frame) copia.frame = {...rest.frame};
+    return copia;
 }
 
 function activeHomeAnnotations() {
@@ -5078,10 +6039,12 @@ function stateSignature() {
     const fundo = [Math.round(docWidth), Math.round(docHeight), bgOpacity.toFixed(3)].join("|");
     const items = editionItems.map(item => {
         const recorte = itemCrop(item);
+        const moldura = itemFrame(item);
         return [
             item.name || "", Math.round(item.x), Math.round(item.y),
             Math.round(item.w), Math.round(item.h),
-            [recorte.x, recorte.y, recorte.w, recorte.h].map(v => v.toFixed(4)).join(",")
+            [recorte.x, recorte.y, recorte.w, recorte.h].map(v => v.toFixed(4)).join(","),
+            moldura ? moldura.color + ":" + moldura.thick : ""
         ].join("|");
     });
     return `${shapes.join("\n")}##${items.join("\n")}##${fundo}`;
@@ -5112,6 +6075,7 @@ function commitHistoryTransaction() {
 }
 
 function restoreState(state) {
+    abandonSpecialCrop();
     homeAnnotations = cloneAnnotations(state.homeAnnotations);
     editionAnnotations = cloneAnnotations(state.editionAnnotations);
     editionItems = state.editionItems.map(cloneEditionItem);
@@ -5143,16 +6107,67 @@ function restoreState(state) {
 
 // --- Copiar e colar elementos (Ctrl+C / Ctrl+V) ---------------------------
 
+// Uma imagem da Edicao sozinha num PNG: o recorte dela, o giro dela e a
+// transparencia dela, na resolucao da ORIGINAL - nao na que ela esta ocupando na
+// folha. E o que sai quando as imagens sao copiadas para fora do programa.
+function editionItemDataUrl(item) {
+    const fonte = item && item.image;
+    if (!fonte) return null;
+    const {sx, sy, sw, sh} = cropSourceRect(item, fonte);
+    const largura = Math.max(1, Math.round(sw));
+    const altura = Math.max(1, Math.round(sh));
+    const angulo = (Number(item.angle) || 0) * Math.PI / 180;
+    const folha = document.createElement("canvas");
+    const pincel = folha.getContext("2d");
+    if (!angulo) {
+        folha.width = largura;
+        folha.height = altura;
+        pincel.globalAlpha = shapeOpacity(item);
+        pincel.drawImage(fonte, sx, sy, sw, sh, 0, 0, largura, altura);
+        return folha.toDataURL("image/png");
+    }
+    // Girada, a imagem precisa de uma folha maior para caber inteira: as
+    // quinas passam a ocupar mais largura e mais altura que o retangulo reto.
+    const cos = Math.abs(Math.cos(angulo));
+    const sen = Math.abs(Math.sin(angulo));
+    folha.width = Math.max(1, Math.round(largura * cos + altura * sen));
+    folha.height = Math.max(1, Math.round(largura * sen + altura * cos));
+    pincel.translate(folha.width / 2, folha.height / 2);
+    pincel.rotate(angulo);
+    pincel.globalAlpha = shapeOpacity(item);
+    pincel.drawImage(fonte, sx, sy, sw, sh, -largura / 2, -altura / 2, largura, altura);
+    return folha.toDataURL("image/png");
+}
+
+// Ctrl+C aqui copia o ELEMENTO: a marcacao, ou as imagens selecionadas, cada uma
+// seguindo por conta propria. E outra coisa do "Copiar" da faixa (Exportar), que
+// achata a folha inteira numa imagem so - por isso aquele botao chama
+// copyFinalImage(true), que pula este caminho de proposito.
 function copySelectedElement() {
     if (selectedIndex >= 0 && annotations[selectedIndex]) {
         elementClipboard = {kind: "annotation", data: cloneAnnotations([annotations[selectedIndex]])[0]};
         setStatus("Marcação copiada. Use Ctrl+V para colar.");
         return true;
     }
-    if (workspaceMode === "edition" && selectedEditionItemIndex >= 0 && editionItems[selectedEditionItemIndex]) {
-        elementClipboard = {kind: "editionItem", data: cloneEditionItem(editionItems[selectedEditionItemIndex])};
-        setStatus("Imagem copiada. Use Ctrl+V para colar.");
-        return true;
+    if (workspaceMode === "edition") {
+        const itens = selectedEditionItemsList();
+        if (itens.length) {
+            elementClipboard = {kind: "editionItems", data: itens.map(cloneEditionItem)};
+            // Dentro do programa a colagem ja vem solta (elementClipboard). Para
+            // FORA e preciso dizer a mesma coisa na lingua do Windows: uma
+            // imagem so vai como imagem; duas ou mais vao como arquivos, senao a
+            // area de transferencia as juntaria num mosaico.
+            const paginas = itens.map(editionItemDataUrl).filter(Boolean);
+            if (pyBridge && paginas.length > 1 && typeof pyBridge.copyImagesAsFiles === "function") {
+                pyBridge.copyImagesAsFiles(JSON.stringify(paginas));
+                return true;
+            }
+            if (pyBridge && paginas.length === 1) pyBridge.copyImage(paginas[0], false);
+            setStatus(itens.length > 1
+                ? `${itens.length} imagens copiadas. Use Ctrl+V para colar.`
+                : "Imagem copiada. Use Ctrl+V para colar.");
+            return true;
+        }
     }
     return false;
 }
@@ -5183,17 +6198,23 @@ function pasteCopiedElement() {
     }
     pushHistory();
     ensureEditionCanvas();
-    const source = elementClipboard.data;
-    const copy = cloneEditionItem({...source, x: source.x + offset, y: source.y + offset});
-    editionItems.push(copy);
-    selectedEditionItemIndex = editionItems.length - 1;
+    // Guardado como lista desde a copia; o formato antigo (uma imagem so) ainda
+    // chega pelas sessoes recuperadas, entao ele e aceito do mesmo jeito.
+    const origem = Array.isArray(elementClipboard.data) ? elementClipboard.data : [elementClipboard.data];
+    const copias = origem.map(source =>
+        cloneEditionItem({...source, x: source.x + offset, y: source.y + offset}));
+    // Cada copia e uma imagem por conta propria: a partir daqui da para mover,
+    // cortar e apagar uma sem tocar nas outras.
+    copias.forEach(copia => editionItems.push(copia));
+    setEditionSelection(copias.map(copia => editionItems.indexOf(copia)));
     selectedIndex = -1;
-    expandEditionCanvasToFit(copy);
-    elementClipboard.data = cloneEditionItem(copy);
+    copias.forEach(expandEditionCanvasToFit);
+    // Colagens seguidas ficam em escada, como no PowerPoint.
+    elementClipboard.data = copias.map(cloneEditionItem);
     updateWorkspaceVisibility();
     applyZoom();
     redraw();
-    setStatus("Imagem colada.");
+    setStatus(copias.length > 1 ? `${copias.length} imagens coladas.` : "Imagem colada.");
     scheduleClipboardSync();
     return true;
 }
@@ -5304,7 +6325,16 @@ function copyFinalImage(forceWholeImage = false) {
     // Ctrl+V). O botão "Copiar" da faixa continua copiando a imagem inteira.
     if (!forceWholeImage && copySelectedElement()) return;
     const data = exportDataUrl();
-    if (data && pyBridge) pyBridge.copyImage(data);
+    if (!data || !pyBridge) return;
+    // A folha achatada e a copia "para fora": uma imagem so, sem as partes.
+    // Dizer isso importa porque, sem selecao, e aqui que o Ctrl+C cai - e colar
+    // de volta traria tudo grudado, que nao e o que se esperava.
+    pyBridge.copyImage(data, false);
+    const soltas = workspaceMode === "edition" && editionItems.length > 1;
+    setStatus(soltas
+        ? "Folha inteira copiada como uma imagem só. Para copiar as imagens soltas,"
+          + " selecione-as antes (Ctrl+clique junta várias)."
+        : "Imagem copiada. Use Ctrl+V para colar.");
 }
 
 function changeZoom(delta) {
@@ -5317,18 +6347,6 @@ function changeZoom(delta) {
 function resetZoom() {
     finishActiveCommand(true);
     fitToWorkspace();
-}
-
-// Tamanho real: um pixel da imagem em um pixel da tela. E o unico zoom em que a
-// captura aparece exatamente como foi capturada - em qualquer outro a tela
-// precisa reduzir ou ampliar, e ai ela perde ou inventa detalhe. Com a folha
-// maior que a janela, as barras de rolagem alcancam o resto.
-function zoomToActualSize() {
-    if (!ensureImage()) return;
-    finishActiveCommand(true);
-    zoomLevel = 1;
-    applyZoom();
-    setStatus("Tamanho real (100%): a imagem está pixel a pixel.");
 }
 
 function fitToWorkspace() {
@@ -5431,15 +6449,22 @@ window.addEventListener("keydown", event => {
         closeEditionImageMenu();
         return;
     }
+    if (specialCrop && (event.key === "Enter" || event.key === "Escape")) {
+        event.preventDefault();
+        if (event.key === "Escape") cancelSpecialCrop();
+        else specialCropAvancar();
+        return;
+    }
     if (editionCropIndex >= 0 && (event.key === "Enter" || event.key === "Escape")) {
         event.preventDefault();
         endEditionCrop(event.key === "Enter");
         return;
     }
     if (event.key === "Escape") {
-        if (activeFormatPopover) {
+        // Preso, o menu nao sai com ESC - e a tecla volta a valer para a folha,
+        // em vez de ser engolida por um menu que nao vai fechar.
+        if (activeFormatPopover && closeFormatPopover(true)) {
             event.preventDefault();
-            closeFormatPopover(true);
             return;
         }
         event.preventDefault();
@@ -5485,11 +6510,13 @@ window.addEventListener("keydown", event => {
         return;
     }
     if (workspaceMode === "edition" && event.key === "Delete" && selectedEditionItemIndex >= 0) {
+        const alvos = selectedEditionIndices(true);
         pushHistory();
-        editionItems.splice(selectedEditionItemIndex, 1);
-        selectedEditionItemIndex = -1;
+        // De tras para frente: remover por indice mexe nos indices seguintes.
+        alvos.forEach(indice => editionItems.splice(indice, 1));
+        setEditionSelection([]);
         redraw();
-        setStatus("Imagem removida da edição.");
+        setStatus(alvos.length > 1 ? `${alvos.length} imagens removidas da edição.` : "Imagem removida da edição.");
         scheduleClipboardSync();
         return;
     }
@@ -5504,5 +6531,6 @@ window.addEventListener("keydown", event => {
 });
 
 initializeDrawingPickers();
+initializeSpecialCropBar();
 initializeGreeting();
 initializeBridge();

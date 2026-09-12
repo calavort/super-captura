@@ -43,7 +43,7 @@
         /* Não selecionável apenas nas BARRAS de interface. O QtWebEngine bloqueia
            a seleção do mouse se qualquer ANCESTRAL estiver em user-select:none,
            então a área de trabalho (e o editor de texto) NÃO pode herdar none. */
-        .top-bar, .ribbon-container, .status-bar, .floating-zoom,
+        .top-bar, .ribbon-container, .status-bar, .floating-zoom, .step-bar,
         .format-popover, .image-menu {
             -webkit-user-select: none;
             user-select: none;
@@ -298,6 +298,14 @@
             font-size: 20px;
             color: #323130;
         }
+
+        /* Moldura: duas molduras concentricas, como um porta-retrato. E o unico
+           desenho que nao se confunde com o Retangulo (quadrado cheio) nem com o
+           Cobrir (quadriculado). */
+        .frame-icon { width: 21px; height: 20px; display: block; }
+        .frame-icon rect { fill: none; stroke: #323130; }
+        .frame-icon .frame-outer { stroke-width: 2; }
+        .frame-icon .frame-inner { stroke-width: 1.3; }
 
         .revision-icon {
             width: 22px;
@@ -568,6 +576,41 @@
         }
         .zoom-adjust-btn:hover { background-color: #EDEBE9; border-color: #107C41; color: #107C41; }
 
+        /* Barra de passos do corte especial. Ele anda em tres etapas, e sem isto
+           a unica pista de que faltava um Enter ficava la embaixo, na barra de
+           estado - longe de onde a mao esta clicando. */
+        .step-bar {
+            /* Presa a janela, e nao a folha: rolar a area de trabalho para
+               alcancar uma imagem la embaixo nao pode levar as instrucoes
+               junto. Fica logo acima da barra de estado (26px + 1 de borda),
+               onde nao cobre o alto da folha - que e onde as imagens caem. */
+            position: fixed;
+            bottom: 35px;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            max-width: calc(100vw - 40px);
+            padding: 7px 10px;
+            background: #FFFFFF;
+            border: 1px solid #107C41;
+            border-top: 3px solid #107C41;
+            box-shadow: 0 3px 10px rgba(0,0,0,0.16);
+            color: #323130;
+            font-size: 12px;
+            z-index: 20;
+        }
+        .step-bar[hidden] { display: none; }
+        .step-bar .step-count { flex: none; padding: 2px 7px; background: #107C41; color: #FFFFFF; font-size: 11px; font-weight: 600; }
+        .step-bar .step-text { flex: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+        .step-bar .step-buttons { flex: none; display: flex; gap: 6px; }
+        .step-bar button { height: 24px; padding: 0 10px; border: 1px solid #C8C6C4; background: #F3F2F1; color: #323130; cursor: pointer; font: 12px 'Segoe UI'; }
+        .step-bar button:hover:not(:disabled) { background: #EDEBE9; border-color: #107C41; color: #107C41; }
+        .step-bar button.primary { border-color: #107C41; background: #107C41; color: #FFFFFF; }
+        .step-bar button.primary:hover:not(:disabled) { background: #0B5C31; border-color: #0B5C31; color: #FFFFFF; }
+        .step-bar button:disabled { background: #F3F2F1; border-color: #E1DFDD; color: #A19F9D; cursor: default; }
+
         /* Barra de Status Inferior */
         .status-bar {
             height: 26px;
@@ -601,6 +644,12 @@
         .picker-heading { display:flex; justify-content:space-between; align-items:center; margin:-2px 0 10px; padding-bottom:8px; border-bottom:1px solid #EDEBE9; font-size:13px; font-weight:600; color:#323130; cursor:move; }
         .picker-heading .picker-close { cursor:pointer; }
         .picker-close { border:1px solid transparent; background:transparent; color:#605E5C; width:22px; height:22px; cursor:pointer; font-size:15px; line-height:1; }
+        /* Taxinha e X ficam no mesmo canto e nao arrastam o menu junto. */
+        .picker-actions { display:flex; align-items:center; gap:2px; cursor:default; }
+        .picker-pin { display:flex; align-items:center; justify-content:center; border:1px solid transparent; background:transparent; color:#605E5C; width:22px; height:22px; padding:0; cursor:pointer; }
+        .pin-glyph { width:14px; height:14px; fill:currentColor; }
+        .picker-pin[aria-pressed="true"] { background:#E6F2EA; border-color:#107C41; color:#107C41; }
+        .picker-pin[aria-pressed="true"] .pin-glyph { transform:rotate(-35deg); }
         .picker-label { display:block; margin:12px 0 6px; font-size:11px; font-weight:600; color:#605E5C; }
         .swatch-grid { display:grid; grid-template-columns:repeat(10,1fr); gap:5px; }
         .color-swatch { aspect-ratio:1; width:100%; border:1px solid #0002; background:var(--swatch); cursor:pointer; padding:0; }
@@ -621,7 +670,8 @@
         .stroke-tool { display:flex; width:42px; }
         .stroke-tool .tool-btn { width:29px; min-width:0; }
         .stroke-menu-trigger { width:13px; padding:0; border:1px solid transparent; border-radius:3px; background:transparent; color:#616161; cursor:pointer; }
-        .stroke-menu-trigger:hover,.color-trigger:hover,.picker-close:hover { background:#F3F2F1; border-color:#C8C6C4; }
+        .stroke-menu-trigger:hover,.color-trigger:hover,.picker-close:hover,.picker-pin:hover { background:#F3F2F1; border-color:#C8C6C4; }
+        .picker-pin[aria-pressed="true"]:hover { background:#D7EADF; border-color:#107C41; }
         .stroke-choices { display:flex; flex-direction:column; gap:3px; }
         .stroke-choice { display:flex; align-items:center; gap:14px; min-height:32px; padding:5px 9px; border:1px solid transparent; background:#FFFFFF; cursor:pointer; color:#323130; }
         .stroke-choice[aria-pressed="true"] { background:#C6E0B4; border-color:#107C41; color:#323130; }
@@ -630,11 +680,33 @@
         .option-choices { display:flex; gap:6px; }
         .option-choice { display:flex; flex:1; flex-direction:column; align-items:center; gap:5px; padding:8px 6px; border:1px solid #C8C6C4; background:#FFFFFF; cursor:pointer; color:#323130; font:12px 'Segoe UI'; }
         .option-choice .material-symbols-outlined { font-size:22px; color:#107c41; }
+        /* Desenho das duas formas de encaixe do corte especial: moldura cinza
+           para a imagem, quadro vermelho para o corte - o mesmo vermelho que
+           aparece na folha ao posicionar. */
+        .fit-art { width:100px; max-width:100%; height:42px; }
+        .fit-art .fit-img { fill:#FFFFFF; stroke:#A19F9D; stroke-width:1; }
+        .fit-art .fit-box { fill:#D13438; fill-opacity:.16; stroke:#D13438; stroke-width:1.8; }
+        .fit-art .fit-arrow { fill:none; stroke:#605E5C; stroke-width:1.2; stroke-linecap:round; stroke-linejoin:round; }
         .option-choice[aria-pressed="true"] { background:#C6E0B4; border-color:#107C41; color:#323130; }
         .option-choice:hover { background:#F3F2F1; }
+        /* Botao que dispara um comando de dentro do menu, e nao um ajuste. */
+        .config-action { display:block; width:100%; margin-top:12px; padding:7px 10px; border:1px solid #107C41; background:#107C41; color:#FFFFFF; cursor:pointer; font:12px 'Segoe UI'; }
+        .config-action:hover:not(:disabled) { background:#0B5C31; border-color:#0B5C31; }
+        .config-action:disabled { background:#F3F2F1; border-color:#C8C6C4; color:#A19F9D; cursor:default; }
         .stroke-choice[data-marker="true"] .stroke-sample { opacity:.38; }
+        /* Tipo de linha: o nome a esquerda e a amostra a direita, as duas com
+           largura fixa. Sem isso a amostra esticava para preencher a sobra e
+           cada traco saia de um comprimento - dava para comparar os padroes,
+           mas nao os alinhamentos. */
+        .dash-choice { justify-content:space-between; min-height:28px; padding:3px 9px; }
+        /* 11px, como os rotulos do menu: em 12px o nome pesava mais que a
+           amostra, que e o que a pessoa esta olhando. */
+        .dash-choice .dash-name { flex:none; width:92px; text-align:left; font-size:11px; }
+        .dash-sample { flex:none; width:110px; height:10px; color:#323130; }
+        .stroke-choice[aria-pressed="true"] .dash-sample { color:#107C41; }
         /* Menus de configuracao por ferramenta (tamanho, preenchimento, texto). */
         .config-size-row { display:flex; align-items:center; gap:8px; }
+        .config-thick { width:64px; }
         .config-size-row input { width:56px; height:22px; padding:2px 6px; border:1px solid #8A8886; background:#FFFFFF; color:#323130; font:12px 'Segoe UI'; }
         .config-stepper { display:flex; flex-direction:column; }
         .config-stepper button { width:16px; height:11px; padding:0; border:1px solid #8A8886; background:#FFFFFF; color:#605E5C; cursor:pointer; font:8px/1 'Segoe UI'; }
@@ -657,6 +729,7 @@
         .format-popover { border-radius:0 !important; }
         .format-popover [hidden] { display:none !important; }
         .format-popover button,.format-popover input,.color-trigger { border-radius:0 !important; }
+        .format-popover .picker-pin:focus-visible { outline:2px solid #107c41; outline-offset:1px; }
         .format-popover .color-swatch { border-radius:0 !important; }
         .format-popover .color-spectrum { border-radius:0 !important; }
         .format-popover .spectrum-thumb { border-radius:50% !important; }
@@ -741,6 +814,9 @@
                     </button>
                     <button class="btn btn-icon-only tool-btn" data-tool="Retangulo" title="Retângulo">
                         <span class="material-symbols-outlined">crop_square</span>
+                    </button>
+                    <button class="btn btn-icon-only tool-btn" data-tool="Moldura" title="Moldura: contorna a imagem selecionada, na cor e espessura da Formatação">
+                        <svg class="frame-icon" viewBox="0 0 24 24" aria-hidden="true"><rect class="frame-outer" x="2.5" y="3.5" width="19" height="17"/><rect class="frame-inner" x="6.5" y="7.5" width="11" height="9"/></svg>
                     </button>
                     <button class="btn btn-icon-only tool-btn" data-tool="Circulo" title="Círculo">
                         <span class="material-symbols-outlined">radio_button_unchecked</span>
@@ -931,6 +1007,7 @@
                     <button class="btn btn-icon-only tool-btn" data-tool="Mover" title="Mover"><span class="material-symbols-outlined">open_with</span></button>
                     <button class="btn btn-icon-only tool-btn" data-tool="Seta" title="Seta"><span class="material-symbols-outlined">east</span></button>
                     <button class="btn btn-icon-only tool-btn" data-tool="Retangulo" title="Retângulo"><span class="material-symbols-outlined">crop_square</span></button>
+                    <button class="btn btn-icon-only tool-btn" data-tool="Moldura" title="Moldura: contorna a imagem selecionada, na cor e espessura da Formatação"><svg class="frame-icon" viewBox="0 0 24 24" aria-hidden="true"><rect class="frame-outer" x="2.5" y="3.5" width="19" height="17"/><rect class="frame-inner" x="6.5" y="7.5" width="11" height="9"/></svg></button>
                     <button class="btn btn-icon-only tool-btn" data-tool="Circulo" title="Círculo"><span class="material-symbols-outlined">radio_button_unchecked</span></button>
                     <button class="btn btn-icon-only tool-btn" data-tool="Linha" title="Linha Direta"><span class="material-symbols-outlined">horizontal_rule</span></button>
                     <button class="btn btn-icon-only tool-btn" data-tool="Caneta" title="Caneta (Mão livre)"><span class="material-symbols-outlined">draw</span></button>
@@ -1171,6 +1248,15 @@
 
     <div class="workspace" id="workspace">
         <input type="file" id="edition-image-input" accept="image/*" multiple style="display: none;">
+        <div class="step-bar" id="special-crop-bar" hidden role="status">
+            <span class="step-count" id="special-crop-step"></span>
+            <span class="step-text" id="special-crop-text"></span>
+            <span class="step-buttons">
+                <button type="button" class="primary" id="special-crop-next"></button>
+                <button type="button" id="special-crop-cancel">Cancelar</button>
+            </span>
+        </div>
+
         <div class="floating-zoom">
             <button class="zoom-btn" onclick="changeZoom(-0.1)" title="Reduzir">
                 <span class="material-symbols-outlined">remove</span>
@@ -1179,8 +1265,6 @@
             <button class="zoom-btn" onclick="changeZoom(0.1)" title="Ampliar">
                 <span class="material-symbols-outlined">add</span>
             </button>
-            <button class="zoom-adjust-btn" onclick="zoomToActualSize()"
-                    title="Tamanho real: cada pixel da imagem em um pixel da tela">1:1</button>
             <button class="zoom-adjust-btn" onclick="resetZoom()">Ajustar</button>
         </div>
 

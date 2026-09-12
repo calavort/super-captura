@@ -84,6 +84,46 @@ RECURSOS
 - Linha ortogonal contínua: clique para iniciar, clique para continuar em
   vertical/horizontal e finalize com ESC, botão direito ou "Interromper".
 - Movimento e redimensionamento das marcações.
+- Tipo de linha na linha direta e na ortogonal, pela setinha ao lado da
+  ferramenta: contínua, tracejada (peça invisível), linha de centro e
+  pontilhada. O padrão acompanha a espessura do traço, e a espessura pode ser
+  digitada no próprio menu - é o mesmo valor do campo Cor / Esp. da faixa.
+- Moldura: é um COMANDO, não um modo de desenho. Selecione a imagem (ou várias,
+  com Ctrl+clique) e clique no botão: o contorno aparece na hora, encostado na
+  borda de cada uma. A cor e a espessura são as da seção Formatação (Cor / Esp.);
+  clicar de novo com outros valores troca a moldura que já está lá, em vez de
+  empilhar uma segunda. A seleção continua de pé e a ferramenta em uso não muda.
+  Na Edição a moldura é PARTE da imagem, não uma marcação por cima dela: ela
+  anda, escala, gira, é recortada, copiada, exportada e desfeita junto com a
+  imagem, e clicar nela pega a imagem. Para tirá-la, botão direito na imagem ->
+  "Remover moldura" (ou Ctrl+Z).
+  Sem nada selecionado não sai moldura nenhuma: a folha branca é o fundo do
+  programa, não uma imagem. Na Página Inicial não há o que selecionar (existe uma
+  captura só, e a folha é ela), então lá o contorno é dela.
+  Para desenhar um retângulo à mão em volta de algo, a ferramenta é o Retângulo.
+- Na guia Edição, Ctrl+clique junta imagens na seleção. Arrastar, empurrar com
+  as setas, Delete e o botão direito valem para o grupo inteiro; a alça de
+  redimensionar fica só na última clicada.
+- Ctrl+C e Ctrl+V duplicam as imagens selecionadas na Edição, cada cópia
+  independente das outras - e o botão "Colar" da faixa segue o mesmo caminho.
+- Copiadas para FORA do programa, as imagens selecionadas também chegam
+  separadas: com duas ou mais, o Ctrl+C põe na área de transferência uma lista
+  de ARQUIVOS (um PNG por imagem, na resolução original), e não um mosaico. O
+  Word, o Outlook e o Explorer colam cada uma por conta própria. Com uma imagem
+  só, vai a imagem mesmo, como todo programa espera.
+  Isso é diferente do "Copiar" da faixa (Exportar), que achata a folha inteira
+  numa imagem só; sem nada selecionado, o Ctrl+C cai nessa cópia achatada e a
+  barra de estado avisa, para a colagem seguinte não surpreender.
+- Cortar especial, na setinha ao lado da ferramenta Cortar (e no botão direito
+  de uma imagem da Edição). Uma barra de passos conduz as três etapas, com botão
+  para avançar - Enter faz o mesmo:
+    1. clique nas imagens; a nº 1 é a referência;
+    2. recorte a imagem nº 1 pelas alças;
+    3. arraste o quadro vermelho que apareceu em cada uma das outras.
+  O ajuste nas demais imagens é "mesmo tamanho" ou "mesma proporção", e o corte
+  inteiro entra como um único desfazer.
+- Os menus flutuantes têm uma taxinha ao lado do X: presos, deixam de fechar ao
+  clicar fora ou com ESC, e continuam arrastáveis pelo título.
 - Ctrl+scroll e botões de zoom atuam apenas na imagem, sem ampliar/reduzir a
   interface do programa. As alças de seleção mantêm o mesmo tamanho aparente em
   qualquer zoom.

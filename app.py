@@ -49,7 +49,7 @@ os.environ.setdefault(
      if SOFTWARE_RENDER else "--disable-features=CalculateNativeWinOcclusion"),
 )
 
-from PySide6.QtCore import QEvent, QObject, QRect, Qt, QTimer, QUrl, Slot
+from PySide6.QtCore import QEvent, QMimeData, QObject, QRect, Qt, QTimer, QUrl, Slot
 from PySide6.QtGui import QAction, QColor, QGuiApplication, QIcon, QImage, QKeySequence, QPainter, QPen, QPixmap, QShortcut
 from PySide6.QtMultimedia import (
     QAudioInput,
@@ -146,6 +146,8 @@ def default_settings() -> dict:
         "balloon_line": False,
         "review_fill": False,
         "cloud_free": False,
+        "special_crop_fit": "tamanho",
+        "line_dash": "solida",
         "text_autogrow": True,
         "bold": False,
         "italic": False,
@@ -734,6 +736,61 @@ class Bridge(QObject):
         QApplication.clipboard().setImage(image)
         if notify:
             self._emit_status("Imagem copiada. Use Ctrl+V para colar.")
+        # notify=False: a interface vai dizer, com mais precisao, o que copiou.
+
+    @Slot(str)
+    def copyImagesAsFiles(self, payload: str):
+        """Varias imagens na area de transferencia como ARQUIVOS, nao como uma so.
+
+        A area de transferencia do Windows guarda UMA imagem. Copiar tres
+        capturas como imagem so podia devolver um mosaico das tres - que e
+        justamente o contrario do que se quer: la fora elas tem de chegar
+        separadas, uma a uma. A lista de arquivos e o formato que faz isso: o
+        Word, o Outlook e o Explorer colam cada arquivo por conta propria.
+
+        Nao vai imagem junto de proposito. Com os dois formatos na area, quase
+        todo programa prefere o bitmap - e o mosaico voltaria pela porta dos
+        fundos.
+        """
+        try:
+            fontes = json.loads(payload)
+        except (ValueError, TypeError):
+            return
+        if not isinstance(fontes, list) or not fontes:
+            return
+        pasta = Path(tempfile.gettempdir()) / "super-captura-copias"
+        try:
+            pasta.mkdir(parents=True, exist_ok=True)
+            # A copia anterior ja foi usada ou perdida: o que fica na pasta e
+            # sempre a ultima, e nao um monte de arquivo esquecido.
+            for antigo in pasta.glob("*.png"):
+                try:
+                    antigo.unlink()
+                except OSError:
+                    pass
+        except OSError as exc:
+            diagnostico.falha("Nao foi possivel preparar a pasta das copias", exc)
+            self._emit_status("Não foi possível preparar as imagens para copiar.")
+            return
+
+        carimbo = datetime.now().strftime("%H%M%S")
+        urls = []
+        for posicao, data_url in enumerate(fontes, start=1):
+            image = self._data_url_to_image(str(data_url))
+            if image.isNull():
+                continue
+            destino = pasta / f"imagem-{carimbo}-{posicao:02d}.png"
+            if image.save(str(destino), "PNG"):
+                urls.append(QUrl.fromLocalFile(str(destino)))
+        if not urls:
+            self._emit_status("Nenhuma imagem válida para copiar.")
+            return
+        dados = QMimeData()
+        dados.setUrls(urls)
+        QApplication.clipboard().setMimeData(dados)
+        self._emit_status(
+            f"{len(urls)} imagens copiadas, separadas. Cole no Word, no e-mail ou numa pasta."
+        )
 
     @Slot()
     def pasteClipboardImageToEdition(self):
@@ -790,6 +847,7 @@ class Bridge(QObject):
             "delay", "auto_copy", "auto_save", "video_format", "video_fps", "video_audio",
             "color", "thickness", "font_size", "number", "balloon_fill", "balloon_line",
             "review_fill", "cloud_free", "text_autogrow", "tool_sizes",
+            "special_crop_fit", "line_dash",
             "bold", "italic", "underline", "text_align", "auto_sequence",
             "software_render",
             "pen_thickness", "highlighter_thickness", "recent_colors",
