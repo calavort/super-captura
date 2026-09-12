@@ -2162,7 +2162,7 @@ canvas.addEventListener("mousedown", event => {
     preview = createShape(currentTool, point, point, options);
 });
 
-canvas.addEventListener("pointermove", event => {
+function handleDrawingPointerMove(event) {
     if (workspaceMode !== "edition" && !bgImage) return;
     let point = getMousePos(event);
     if (orthogonalPath) {
@@ -2231,6 +2231,25 @@ canvas.addEventListener("pointermove", event => {
     preview = createShape(currentTool, startPoint, point, getOptions());
     if (currentTool === "Balao") preview.text = String(byId("cfg-numero").value || "1");
     scheduleRedraw();
+}
+
+canvas.addEventListener("pointermove", handleDrawingPointerMove);
+
+// Encostar na borda nao e soltar a ferramenta. Com o ponteiro limitado a folha,
+// sair do canvas passou a ser o mesmo que chegar na borda - e o comando morria
+// ali. Enquanto o botao continuar pressionado o movimento e seguido fora do
+// canvas tambem: o desenho encosta na borda e continua acompanhando o ponteiro
+// no eixo que ainda tem folga, ate o botao ser solto.
+window.addEventListener("pointermove", event => {
+    if (!isDrawing) return;
+    // Botao solto fora do alcance do programa (outra janela, fora da tela): o
+    // comando se encerra no primeiro movimento seguinte, em vez de ficar preso
+    // ao ponteiro. Era o mouseleave que cobria esse caso.
+    if (event.buttons === 0) {
+        finishDrawing(event);
+        return;
+    }
+    if (event.target !== canvas) handleDrawingPointerMove(event);
 });
 
 function finishDrawing(event) {
@@ -2296,9 +2315,6 @@ function finishDrawing(event) {
 
 canvas.addEventListener("mouseup", finishDrawing);
 window.addEventListener("mouseup", finishDrawing);
-canvas.addEventListener("mouseleave", event => {
-    if (isDrawing && currentTool !== "Mover" && currentTool !== "LinhaOrto") finishDrawing(event);
-});
 canvas.addEventListener("contextmenu", event => {
     event.preventDefault();
     interruptCommand();

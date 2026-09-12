@@ -656,6 +656,50 @@ def main():
         js("annotations.length = 0; selectedIndex = -1; selectTool('Mover', false); redraw()")
         print("OK: marcacao, caixa de digitacao e caixa da chamada nao passam da folha")
 
+        # --- encostar na borda nao solta a ferramenta ---
+        js("annotations.length = 0; selectedIndex = -1; clearStroke(); selectTool('Retangulo', false)")
+        QTest.mousePress(alvo, Qt.MouseButton.LeftButton, pos=canvas_point(300, 300))
+        QTest.mouseMove(alvo, canvas_point(500, 400), delay=5)
+        # Bem para fora do canvas, com o botao ainda pressionado.
+        QTest.mouseMove(alvo, fora(200, 150), delay=5)
+        QTest.qWait(120)
+        application.processEvents()
+        check("""(() => {
+            // O comando continua vivo: nada foi gravado e o desenho esta preso
+            // a borda, nao solto do lado de fora.
+            if (!isDrawing || !preview || annotations.length !== 0) return false;
+            return Math.abs(preview.x + preview.w - docWidth) < 1
+                && Math.abs(preview.y + preview.h - docHeight) < 1;
+        })()""")
+        # Voltando para dentro, o retangulo volta a obedecer.
+        QTest.mouseMove(alvo, canvas_point(600, 420), delay=5)
+        QTest.qWait(120)
+        application.processEvents()
+        check("""(() => preview && Math.abs(preview.x + preview.w - 600) < 6
+                  && Math.abs(preview.y + preview.h - 420) < 6)()""")
+        QTest.mouseRelease(alvo, Qt.MouseButton.LeftButton, pos=canvas_point(600, 420))
+        QTest.qWait(150)
+        application.processEvents()
+        check("""(() => {
+            const s = annotations[0];
+            return annotations.length === 1 && s.type === 'Retangulo'
+                && Math.abs(s.x + s.w - 600) < 6 && Math.abs(s.y + s.h - 420) < 6;
+        })()""")
+        # Soltando de fato do lado de fora, a marcacao fica na borda.
+        js("annotations.length = 0; selectedIndex = -1; selectTool('Circulo', false)")
+        QTest.mousePress(alvo, Qt.MouseButton.LeftButton, pos=canvas_point(700, 300))
+        QTest.mouseMove(alvo, fora(150, 120), delay=5)
+        QTest.mouseRelease(alvo, Qt.MouseButton.LeftButton, pos=fora(150, 120))
+        QTest.qWait(150)
+        application.processEvents()
+        check("""(() => {
+            const b = annotations[0] && annotationBounds(annotations[0]);
+            return annotations.length === 1 && !isDrawing && !preview
+                && b.x >= -1 && b.y >= -1 && b.x + b.w <= docWidth + 1 && b.y + b.h <= docHeight + 1;
+        })()""")
+        js("annotations.length = 0; selectedIndex = -1; selectTool('Mover', false); redraw()")
+        print("OK: o comando segue vivo com o ponteiro fora do canvas e so termina ao soltar")
+
         # --- imagens da guia Edicao encaixam umas nas outras ---
         check("""(() => {
             const modoAntes = workspaceMode, itensAntes = editionItems;
