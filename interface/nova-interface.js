@@ -45,6 +45,10 @@ const labelTools = new Set(["CotaLivre", "CotaAngulo", "Chamada"]);
 // e o menu delas edita o que estiver selecionado. Por isso todo caminho que
 // pergunta "e o Mover?" passa a perguntar por este conjunto.
 const selectionTools = new Set(["Mover", "Transparencia", "Rotacionar"]);
+// Estas duas nao sao modos de desenho: o botao delas nao tem o que "ligar", ele
+// abre o ajuste. Por isso nao ganham a setinha ao lado - clicar no icone ja faz
+// o que a seta fazia, e uma seta que repete o botao so confunde.
+const menuOnlyTools = new Set(["Transparencia", "Rotacionar"]);
 // Alinhar só faz sentido onde o texto vira várias linhas: a caixa de Texto e a
 // chamada. No balão, no triângulo e nas cotas o texto é um valor só, já centrado
 // no lugar dele — por isso os botões apagam nessas ferramentas.
@@ -127,6 +131,19 @@ function initializeGreeting(name) {
     const greeting = hour >= 5 && hour < 12 ? "Bom dia" : (hour < 18 ? "Boa tarde" : "Boa noite");
     const displayName = String(name || appSettings.user?.name || "Calavort").trim() || "Calavort";
     byId("greeting-text").textContent = `${greeting}, ${displayName}`;
+}
+
+// Avisa o programa assim que a pagina desenha no tamanho novo. Dois quadros de
+// animacao: o primeiro e agendado antes do novo layout entrar, o segundo ja
+// acontece depois dele - e so entao a cobertura pode sair sem mostrar buraco.
+function notifyViewRepainted() {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+        try {
+            if (pyBridge && typeof pyBridge.viewRepainted === "function") pyBridge.viewRepainted();
+        } catch (erro) {
+            reportInterfaceError(erro && erro.message ? erro.message : String(erro), "notifyViewRepainted");
+        }
+    }));
 }
 
 function setStatus(message) {
@@ -512,10 +529,13 @@ document.querySelectorAll(".tool-btn").forEach(button => {
     button.addEventListener("click", () => {
         if (selectionTools.has(tool) && selectionTools.has(currentTool)) {
             manterSelecaoAoTrocar(tool);
-            return;
+        } else {
+            if (tool !== currentTool) finishActiveCommand(true);
+            selectTool(tool);
         }
-        if (tool !== currentTool) finishActiveCommand(true);
-        selectTool(tool);
+        // O botao da transparencia e o do giro abrem o ajuste: sem ele, clicar
+        // no icone nao mostrava nada acontecendo.
+        if (menuOnlyTools.has(tool)) abrirMenuDaFerramenta(tool);
     });
 });
 
@@ -1766,6 +1786,7 @@ function buildToolConfigMenus() {
     enableFormatPopoverDrag(popover);
 
     Object.keys(toolConfigMenus).forEach(tool => {
+        if (menuOnlyTools.has(tool)) return;
         document.querySelectorAll('.tool-btn[data-tool="' + tool + '"]').forEach(toolButton => {
             const wrapper = document.createElement("div");
             wrapper.className = "stroke-tool";
@@ -2942,7 +2963,9 @@ function showBackgroundMenu(clientX, clientY) {
 // Abre o menu flutuante da ferramenta sem trocar o que esta selecionado: o
 // selectTool limparia a selecao, que e justamente o alvo da edicao.
 function abrirMenuDaFerramenta(tool) {
-    const seletor = ".stroke-menu-trigger[data-tool='" + tool + "']";
+    const seletor = menuOnlyTools.has(tool)
+        ? ".tool-btn[data-tool='" + tool + "']"
+        : ".stroke-menu-trigger[data-tool='" + tool + "']";
     const gatilho = document.querySelector(".ribbon-content.active " + seletor)
         || document.querySelector(seletor);
     if (!gatilho) return;

@@ -1520,8 +1520,13 @@ def main():
             // 5) Fechar e reabrir devolve o menu para junto do botao.
             closeFormatPopover();
             abrirMenuDaFerramenta('Transparencia');
+            // A transparencia e o giro nao tem setinha: o proprio botao e a
+            // ancora do menu.
             const gatilho = document.querySelector(
-                ".ribbon-content.active .stroke-menu-trigger[data-tool='Transparencia']");
+                ".ribbon-content.active .tool-btn[data-tool='Transparencia']");
+            if (document.querySelector(".stroke-menu-trigger[data-tool='Transparencia']")) {
+                return 'a transparencia ainda tem setinha';
+            }
             const novo = popover.getBoundingClientRect();
             if (Math.abs(novo.left - gatilho.getBoundingClientRect().left) > 14) {
                 return 'nao voltou para o botao ao reabrir';

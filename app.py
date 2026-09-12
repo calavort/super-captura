@@ -62,7 +62,8 @@ from PySide6.QtMultimedia import (
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QRubberBand, QWidget
+from PySide6.QtWidgets import (
+    QApplication, QFileDialog, QLabel, QMainWindow, QMessageBox, QRubberBand, QWidget)
 
 from atualizacao.atualizador_ui import UpdateController
 
@@ -1017,11 +1018,14 @@ class Bridge(QObject):
 
     @Slot()
     def minimizeWindow(self):
+        # O retrato é tirado ANTES de sumir: é ele que volta na restauração,
+        # quando a janela reaparece e a página ainda não desenhou.
+        self.window.pending_restore_snapshot = self.window.window_snapshot()
         self.window.showMinimized()
 
     @Slot()
     def maximizeWindow(self):
-        self.window.show_resize_cover(900)
+        self.window.show_resize_cover()
         QApplication.processEvents()
         if self.window.isMaximized():
             self.window.showNormal()
@@ -1031,9 +1035,12 @@ class Bridge(QObject):
         # A troca de estado da janela também dispara MainWindow.changeEvent, que
         # sincroniza o ícone (cobre inclusive o maximizar via Aero Snap).
         self.window.web.setUpdatesEnabled(True)
-        self.window.web.repaint()
-        QTimer.singleShot(30, self.window.web.update)
-        QTimer.singleShot(240, self.window.web.update)
+        self.window.web.update()
+
+    @Slot()
+    def viewRepainted(self):
+        """A página avisou que já desenhou no tamanho novo."""
+        self.window.hide_resize_cover()
 
     def _emit_maximize_state(self, maximized: bool) -> None:
         self.window.web.page().runJavaScript(
@@ -1089,11 +1096,19 @@ class MainWindow(QMainWindow):
         self.web = SuperWebView(self)
         self.web.setStyleSheet("background: #E1DFDD;")
         self.setCentralWidget(self.web)
-        self._resize_cover = QWidget(self)
+        # Enquanto o QtWebEngine refaz a superfície no tamanho novo, o que
+        # aparece é o fundo da janela. A cobertura tapa esse buraco com um
+        # RETRATO do que estava na tela um instante antes - antes era um cinza
+        # chapado, que é justamente o "apagão" que se via ao maximizar.
+        self._resize_cover = QLabel(self)
         self._resize_cover.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
         self._resize_cover.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
         self._resize_cover.setStyleSheet("background: #E1DFDD;")
+        self._resize_cover.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self._resize_cover.hide()
+        self._cover_token = 0
+        self.pending_restore_snapshot: Optional[QPixmap] = None
         self.web.setZoomFactor(1.0)
         self.web.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessRemoteUrls, False)
         self.web.settings().setAttribute(QWebEngineSettings.WebAttribute.LocalContentCanAccessFileUrls, True)
@@ -1187,11 +1202,45 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             diagnostico.falha("Nao foi possivel desligar as transicoes do DWM", exc)
 
-    def show_resize_cover(self, duration_ms: int = 700) -> None:
+    def window_snapshot(self) -> Optional[QPixmap]:
+        """O que está na tela agora, para tapar a troca de tamanho."""
+        if self.width() < 8 or self.height() < 8 or self.isMinimized():
+            return None
+        try:
+            return self.grab()
+        except Exception as exc:
+            diagnostico.falha("Nao foi possivel fotografar a janela", exc)
+            return None
+
+    # Medido nesta janela: com a aceleracao por video (e mesmo sem ela) a
+    # superficie nao chega a apagar, e a pagina avisa que redesenhou em menos de
+    # 50 ms. A cobertura fica como seguro para maquina mais lenta, e o teto e
+    # curto de proposito: o pior caso passou a ser 400 ms do RETRATO da tela, e
+    # nao 900 ms de cinza - que era exatamente o "apagao" relatado.
+    def show_resize_cover(self, duration_ms: int = 400, snapshot: Optional[QPixmap] = None) -> None:
+        retrato = snapshot if snapshot is not None else self.window_snapshot()
+        if retrato is None:
+            self._resize_cover.clear()
+        else:
+            self._resize_cover.setPixmap(retrato)
         self._resize_cover.setGeometry(self.rect())
         self._resize_cover.raise_()
         self._resize_cover.show()
-        QTimer.singleShot(max(120, duration_ms), self._resize_cover.hide)
+        # O tempo fixo passa a ser só a rede de segurança: quem manda esconder é
+        # a própria página, assim que ela desenha o primeiro quadro no tamanho
+        # novo. Antes eram 900 ms cravados de cinza, medidos e visíveis.
+        self._cover_token += 1
+        token = self._cover_token
+        QTimer.singleShot(max(120, duration_ms), lambda: self.hide_resize_cover(token))
+        self.web.page().runJavaScript(
+            "if (typeof notifyViewRepainted === 'function') notifyViewRepainted();")
+
+    def hide_resize_cover(self, token: Optional[int] = None) -> None:
+        # Um aviso atrasado não pode tirar a cobertura da troca SEGUINTE.
+        if token is not None and token != self._cover_token:
+            return
+        self._resize_cover.hide()
+        self._resize_cover.clear()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -1200,8 +1249,16 @@ class MainWindow(QMainWindow):
 
     def changeEvent(self, event):
         super().changeEvent(event)
-        if event.type() == QEvent.Type.WindowStateChange and hasattr(self, "bridge"):
-            self.bridge._emit_maximize_state(self.isMaximized())
+        if event.type() != QEvent.Type.WindowStateChange or not hasattr(self, "bridge"):
+            return
+        self.bridge._emit_maximize_state(self.isMaximized())
+        saindo_do_minimizado = (
+            bool(event.oldState() & Qt.WindowState.WindowMinimized) and not self.isMinimized())
+        if saindo_do_minimizado:
+            retrato = getattr(self, "pending_restore_snapshot", None)
+            self.pending_restore_snapshot = None
+            self.show_resize_cover(snapshot=retrato)
+            self.web.update()
 
     def nativeEvent(self, event_type, message):
         """Remove a moldura nativa no Windows sem abrir mão do Aero Snap.

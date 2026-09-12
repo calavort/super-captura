@@ -246,6 +246,44 @@ def main():
                    " pyBridge.savePreferences(JSON.stringify(readPreferences()))")
         print("OK: alinhamento e sequencia automatica gravados no arquivo e restaurados")
 
+        # --- maximizar e restaurar sem apagar a tela ---
+        # O remendo antigo tapava a troca de tamanho com um cinza chapado por
+        # 900 ms: era ele que aparecia como "tela cinza ao maximizar". Medido
+        # aqui: quantos milissegundos a area de trabalho fica com uma cor so.
+        import time as _relogio
+
+        def ms_apagados(acao, duracao_ms=1200):
+            acao()
+            inicio = _relogio.monotonic()
+            apagados = 0
+            while (_relogio.monotonic() - inicio) * 1000 < duracao_ms:
+                application.processEvents()
+                imagem = window.grab().toImage()
+                largura, altura = imagem.width(), imagem.height()
+                if largura > 50 and altura > 50:
+                    cores = {imagem.pixelColor(x, y).name()
+                             for x in range(20, largura - 20, max(1, largura // 20))
+                             for y in range(int(altura * 0.4), altura - 20, max(1, altura // 12))}
+                    if len(cores) <= 2:
+                        apagados += 1
+                _relogio.sleep(0.016)
+            return apagados * 16
+
+        window.showNormal()
+        QTest.qWait(500)
+        application.processEvents()
+        for rotulo in ("maximizar", "restaurar"):
+            apagado = ms_apagados(lambda: window.bridge.maximizeWindow())
+            assert apagado <= 100, f"{rotulo}: {apagado} ms de tela apagada"
+            QTest.qWait(400)
+        # E a cobertura nao fica presa por cima depois da transicao.
+        QTest.qWait(600)
+        application.processEvents()
+        assert not window._resize_cover.isVisible(), "a cobertura ficou presa na tela"
+        window.showNormal()
+        QTest.qWait(400)
+        print("OK: maximizar e restaurar sem apagar a tela, e sem cobertura presa")
+
         javascript("document.querySelector(\".ribbon-tab[onclick*=\" + '\"tab-config\"' + \"]\").click()")
         window.updater._status("Versao 7.1.1 disponivel.")
         wait_until(lambda: javascript("document.getElementById('tab-config').classList.contains('active')"))

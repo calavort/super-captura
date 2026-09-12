@@ -146,12 +146,15 @@ def main():
         js("document.querySelector('.ribbon-tab[onclick*=tab-edicao]').click()")
         check("workspaceMode === 'edition'")
         # Caneta, marca-texto e nuvem de revisao, nas duas guias.
-        # Cada ferramenta com tamanho proprio tem a sua setinha, nas duas guias.
+        # Cada ferramenta com ajuste proprio aparece nas duas guias. A setinha
+        # existe para as que TAMBEM desenham; a transparencia e o giro nao
+        # desenham - o proprio icone delas abre o ajuste, entao nao tem seta.
         check("""(() => {
             const comMenu = ['Caneta','MarcaTexto','Nuvem', ...Object.keys(toolConfigMenus)];
             return comMenu.every(t =>
                 document.querySelectorAll('.tool-btn[data-tool="' + t + '"]').length === 2 &&
-                document.querySelectorAll('.tool-btn[data-tool="' + t + '"] + .stroke-menu-trigger').length === 2);
+                document.querySelectorAll('.tool-btn[data-tool="' + t + '"] + .stroke-menu-trigger').length
+                    === (menuOnlyTools.has(t) ? 0 : 2));
         })()""")
         js("document.querySelectorAll('[data-color-picker]')[1].click()")
         check("!byId('drawing-color-popover').hidden")
