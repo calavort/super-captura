@@ -1308,6 +1308,7 @@ function refreshDrawingControls() {
 }
 
 function closeFormatPopover(restoreFocus = false) {
+    popoverMovedTo = null;
     if (activeFormatPopover) activeFormatPopover.hidden = true;
     if (formatPopoverAnchor) {
         formatPopoverAnchor.setAttribute("aria-expanded", "false");
@@ -1318,12 +1319,44 @@ function closeFormatPopover(restoreFocus = false) {
     openToolConfig = null;
 }
 
+// Enquanto o menu estiver aberto, a posicao escolhida a mao manda. Ela e
+// esquecida ao fechar: na proxima vez ele volta a nascer junto do botao.
+let popoverMovedTo = null;
+
 function positionFormatPopover() {
     if (!activeFormatPopover || !formatPopoverAnchor) return;
-    const anchor = formatPopoverAnchor.getBoundingClientRect();
     const popup = activeFormatPopover;
-    popup.style.left = `${Math.max(12, Math.min(anchor.left, innerWidth - popup.offsetWidth - 12))}px`;
-    popup.style.top = `${Math.max(12, Math.min(anchor.bottom + 8, innerHeight - popup.offsetHeight - 12))}px`;
+    const dentroDaJanela = (x, y) => {
+        popup.style.left = `${Math.max(12, Math.min(x, innerWidth - popup.offsetWidth - 12))}px`;
+        popup.style.top = `${Math.max(12, Math.min(y, innerHeight - popup.offsetHeight - 12))}px`;
+    };
+    if (popoverMovedTo) return dentroDaJanela(popoverMovedTo.x, popoverMovedTo.y);
+    const anchor = formatPopoverAnchor.getBoundingClientRect();
+    dentroDaJanela(anchor.left, anchor.bottom + 8);
+}
+
+// O menu nasce colado no botao que o abriu, e o botao fica na faixa: com a
+// imagem no alto da area de trabalho ele cai justamente em cima do que se esta
+// ajustando. Arrastar pelo titulo tira ele da frente sem fechar - fechar so
+// clicando fora ou no X, como antes.
+function enableFormatPopoverDrag(popup) {
+    popup.addEventListener("mousedown", event => {
+        if (!event.target.closest(".picker-heading") || event.target.closest(".picker-close")) return;
+        event.preventDefault();
+        const caixa = popup.getBoundingClientRect();
+        const pegaX = event.clientX - caixa.left;
+        const pegaY = event.clientY - caixa.top;
+        const arrastar = movimento => {
+            popoverMovedTo = {x: movimento.clientX - pegaX, y: movimento.clientY - pegaY};
+            positionFormatPopover();
+        };
+        const soltar = () => {
+            window.removeEventListener("mousemove", arrastar);
+            window.removeEventListener("mouseup", soltar);
+        };
+        window.addEventListener("mousemove", arrastar);
+        window.addEventListener("mouseup", soltar);
+    });
 }
 
 function openFormatPopover(popup, anchor) {
@@ -1364,6 +1397,7 @@ function initializeDrawingPickers() {
             <p class="picker-error" id="custom-color-error" role="status"></p>
         </details>`;
     document.body.append(colors);
+    enableFormatPopoverDrag(colors);
     const theme = ["#FFFFFF", "#242424", "#E7E6E6", "#44546A", "#107C41", "#4472C4", "#ED7D31", "#A5A5A5", "#FFC000", "#7030A0"];
     const standard = ["#C00000", "#FF0000", "#FFC000", "#FFFF00", "#92D050", "#00B050", "#00B0F0", "#0070C0", "#002060", "#7030A0"];
     const tint = (hex, fraction) => "#" + [1, 3, 5].map(offset => {
@@ -1464,6 +1498,7 @@ function initializeDrawingPickers() {
     thickness.setAttribute("role", "dialog");
     thickness.setAttribute("aria-label", "Espessura do traço");
     document.body.append(thickness);
+    enableFormatPopoverDrag(thickness);
     document.querySelectorAll('.tool-btn[data-tool="Caneta"],.tool-btn[data-tool="MarcaTexto"]').forEach(toolButton => {
         const wrapper = document.createElement("div");
         wrapper.className = "stroke-tool";
@@ -1502,7 +1537,13 @@ function initializeDrawingPickers() {
     document.addEventListener("mousedown", event => {
         if (activeFormatPopover && !activeFormatPopover.contains(event.target) && !formatPopoverAnchor.contains(event.target)) closeFormatPopover();
     });
-    window.addEventListener("resize", () => closeFormatPopover());
+    // Redimensionar a janela fecha o menu porque a ancora dele - o botao da
+    // faixa - anda junto. Se ele ja foi posto a mao noutro lugar, nao ha ancora
+    // a seguir: ele so e trazido de volta para dentro da janela.
+    window.addEventListener("resize", () => {
+        if (popoverMovedTo) positionFormatPopover();
+        else closeFormatPopover();
+    });
     document.querySelectorAll(".ribbon-content").forEach(element => element.addEventListener("scroll", () => closeFormatPopover()));
     refreshDrawingControls();
 }
@@ -1640,6 +1681,7 @@ function buildToolConfigMenus() {
     popover.hidden = true;
     popover.setAttribute("role", "dialog");
     document.body.append(popover);
+    enableFormatPopoverDrag(popover);
 
     Object.keys(toolConfigMenus).forEach(tool => {
         document.querySelectorAll('.tool-btn[data-tool="' + tool + '"]').forEach(toolButton => {
@@ -1753,8 +1795,7 @@ function renderToolConfigMenu(popover, tool) {
     }
     if (config.opacity) {
         const porcento = Math.round((1 - currentOpacity()) * 100);
-        html += '<span class="picker-label">Transparência</span>'
-            + '<div class="config-size-row">'
+        html += '<div class="config-size-row">'
             + '<input class="config-range" type="range" min="0" max="95" step="5" value="' + porcento
             + '" aria-label="Transparência em porcento">'
             + '<span class="config-hint config-porcento">' + porcento + '%</span></div>'

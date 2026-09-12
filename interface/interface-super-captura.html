@@ -43,7 +43,8 @@
         /* Não selecionável apenas nas BARRAS de interface. O QtWebEngine bloqueia
            a seleção do mouse se qualquer ANCESTRAL estiver em user-select:none,
            então a área de trabalho (e o editor de texto) NÃO pode herdar none. */
-        .top-bar, .ribbon-container, .status-bar, .floating-zoom {
+        .top-bar, .ribbon-container, .status-bar, .floating-zoom,
+        .format-popover, .image-menu {
             -webkit-user-select: none;
             user-select: none;
         }
@@ -595,7 +596,8 @@
         .image-menu .menu-item .material-symbols-outlined { font-size:18px; color:#107C41; }
         .config-range { flex:1; height:22px; accent-color:#107C41; cursor:pointer; }
         .config-porcento { min-width:34px; text-align:right; }
-        .picker-heading { display:flex; justify-content:space-between; align-items:center; margin:-2px 0 10px; padding-bottom:8px; border-bottom:1px solid #EDEBE9; font-size:13px; font-weight:600; color:#323130; }
+        .picker-heading { display:flex; justify-content:space-between; align-items:center; margin:-2px 0 10px; padding-bottom:8px; border-bottom:1px solid #EDEBE9; font-size:13px; font-weight:600; color:#323130; cursor:move; }
+        .picker-heading .picker-close { cursor:pointer; }
         .picker-close { border:1px solid transparent; background:transparent; color:#605E5C; width:22px; height:22px; cursor:pointer; font-size:15px; line-height:1; }
         .picker-label { display:block; margin:12px 0 6px; font-size:11px; font-weight:600; color:#605E5C; }
         .swatch-grid { display:grid; grid-template-columns:repeat(10,1fr); gap:5px; }

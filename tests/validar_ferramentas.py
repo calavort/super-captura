@@ -1349,6 +1349,77 @@ def main():
         })()""")
         print("OK: botao direito na marcacao abre Transparencia, Rotacionar e Remover")
 
+        # --- os menus flutuantes: sem selecao de texto e arrastaveis ---
+        check("""(() => {
+            annotations.length = 0;
+            annotations.push({type: 'Retangulo', x: 100, y: 100, w: 120, h: 80, color: '#000', thick: 4});
+            selectTool('Mover', false);
+            selectedIndex = 0;
+            abrirMenuDaFerramenta('Transparencia');
+            const popover = byId('tool-config-popover');
+            if (popover.hidden) return 'nao abriu';
+
+            // 1) Titulo e rotulos nao sao conteudo: arrastar por cima nao deixa
+            // o texto azul. Os campos continuam selecionaveis - a regra de
+            // input/textarea tem !important e vence a do menu.
+            const estilo = alvo => getComputedStyle(alvo).userSelect
+                || getComputedStyle(alvo).webkitUserSelect;
+            if (estilo(popover) !== 'none') return 'menu selecionavel: ' + estilo(popover);
+            if (estilo(popover.querySelector('.picker-heading')) !== 'none') return 'titulo selecionavel';
+            const campo = byId('cfg-espessura');
+            if (estilo(campo) !== 'text') return 'campo da faixa deixou de ser selecionavel';
+
+            // 2) O titulo e a alca: o menu anda com o mouse e NAO fecha.
+            const titulo = popover.querySelector('.picker-heading');
+            const antes = popover.getBoundingClientRect();
+            const soltar = (tipo, x, y) => titulo.dispatchEvent(
+                new MouseEvent(tipo, {clientX: x, clientY: y, bubbles: true, cancelable: true}));
+            titulo.dispatchEvent(new MouseEvent('mousedown',
+                {clientX: antes.left + 20, clientY: antes.top + 10, bubbles: true, cancelable: true}));
+            window.dispatchEvent(new MouseEvent('mousemove',
+                {clientX: antes.left + 20 + 140, clientY: antes.top + 10 + 90, bubbles: true}));
+            window.dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
+            const depois = popover.getBoundingClientRect();
+            if (popover.hidden) return 'fechou ao arrastar';
+            if (Math.abs(depois.left - (antes.left + 140)) > 2) return 'nao andou em x: ' + depois.left;
+            if (Math.abs(depois.top - (antes.top + 90)) > 2) return 'nao andou em y: ' + depois.top;
+
+            // 3) Mexer nos campos nao devolve o menu para junto do botao.
+            const barra = popover.querySelector('.config-range');
+            barra.value = 30;
+            barra.dispatchEvent(new Event('input'));
+            renderToolConfigMenu(popover, 'Transparencia');
+            positionFormatPopover();
+            const aindaLa = popover.getBoundingClientRect();
+            if (Math.abs(aindaLa.left - depois.left) > 2) return 'voltou para o botao';
+
+            // 4) Nem o menu sai da janela, por mais longe que se arraste.
+            titulo.dispatchEvent(new MouseEvent('mousedown',
+                {clientX: aindaLa.left + 20, clientY: aindaLa.top + 10, bubbles: true, cancelable: true}));
+            window.dispatchEvent(new MouseEvent('mousemove',
+                {clientX: innerWidth + 500, clientY: innerHeight + 500, bubbles: true}));
+            window.dispatchEvent(new MouseEvent('mouseup', {bubbles: true}));
+            const preso = popover.getBoundingClientRect();
+            if (preso.right > innerWidth - 10 || preso.bottom > innerHeight - 10) {
+                return 'saiu da janela: ' + JSON.stringify(preso);
+            }
+
+            // 5) Fechar e reabrir devolve o menu para junto do botao.
+            closeFormatPopover();
+            abrirMenuDaFerramenta('Transparencia');
+            const gatilho = document.querySelector(
+                ".ribbon-content.active .stroke-menu-trigger[data-tool='Transparencia']");
+            const novo = popover.getBoundingClientRect();
+            if (Math.abs(novo.left - gatilho.getBoundingClientRect().left) > 14) {
+                return 'nao voltou para o botao ao reabrir';
+            }
+            closeFormatPopover();
+            annotations.length = 0;
+            selectedIndex = -1;
+            return true;
+        })() === true""")
+        print("OK: menu flutuante sem selecao de texto, arrastavel pelo titulo e preso a janela")
+
         # --- alcas mantem o tamanho aparente com o zoom ---
         check("""(() => {
             const antes = screenUnits(9);
