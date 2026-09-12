@@ -413,7 +413,7 @@
         }
         .config-input:focus { border-color: #107C41; }
         .config-input[type="color"] { padding: 0; width: 40px; cursor: pointer; }
-        .config-input.short { width: 40px; }
+        .config-input.short { width: 32px; }
         .config-input.medium { width: 66px; }
         .config-input.long { width: 104px; }
         .config-input:disabled { background-color: #F3F2F1; color: #8A8886; }
@@ -451,13 +451,14 @@
             position: relative;
             overflow: auto;
             display: flex;
-            justify-content: center;
-            align-items: center;
             padding: 20px;
         }
 
         .empty-state {
             position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
             display: flex;
             flex-direction: column;
             align-items: center;
@@ -467,6 +468,11 @@
         
         .canvas-container {
             display: none;
+            /* Centraliza enquanto a imagem cabe e, quando ela passa do tamanho
+               da area, some sozinha para a rolagem alcancar os quatro lados.
+               Com justify-content:center o que sobrava para cima e para a
+               esquerda ficava fora do alcance da barra de rolagem. */
+            margin: auto;
             box-shadow: 0 0 0 1px #C8C6C4, 0 4px 8px rgba(0,0,0,0.1); 
             background-color: #FFFFFF;
             position: relative;
@@ -797,12 +803,6 @@
                         </div>
                     </div>
                     <div class="config-row">
-                        <label style="width: 60px;">Cor / Esp.</label>
-                        <input type="hidden" id="cfg-cor" value="#107C41">
-                        <button class="color-trigger" type="button" data-color-picker title="Cores" aria-label="Escolher cor" aria-expanded="false"><span class="color-chip"></span><span class="picker-chevron"><svg class="caret-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg></span></button>
-                        <input type="number" class="config-input short" id="cfg-espessura" value="4" min="1" max="20">
-                    </div>
-                    <div class="config-row">
                         <label style="width: 60px;">Alinhar</label>
                         <div style="display: flex; gap: 4px; height: 22px;">
                             <button class="btn btn-icon-only align-btn active" id="btn-align-left" onclick="setTextAlign('left')" title="Alinhar à esquerda" aria-pressed="true">
@@ -815,6 +815,12 @@
                                 <span class="material-symbols-outlined" style="font-size: 18px;">format_align_right</span>
                             </button>
                         </div>
+                    </div>
+                    <div class="config-row">
+                        <label style="width: 60px;">Cor / Esp.</label>
+                        <input type="hidden" id="cfg-cor" value="#107C41">
+                        <button class="color-trigger" type="button" data-color-picker title="Cores" aria-label="Escolher cor" aria-expanded="false"><span class="color-chip"></span><span class="picker-chevron"><svg class="caret-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg></span></button>
+                        <input type="number" class="config-input short" id="cfg-espessura" value="4" min="1" max="20">
                     </div>
                     <!-- Tamanho e número vivem no menu de cada ferramenta (a setinha ao
                          lado do botão). Os campos ficam aqui, ocultos, porque é por eles que
@@ -942,18 +948,18 @@
                         </div>
                     </div>
                     <div class="config-row">
-                        <label style="width: 60px;">Cor / Esp.</label>
-                        <input type="hidden" id="ed-cfg-cor" value="#107C41">
-                        <button class="color-trigger" type="button" data-color-picker title="Cores" aria-label="Escolher cor" aria-expanded="false"><span class="color-chip"></span><span class="picker-chevron"><svg class="caret-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg></span></button>
-                        <input type="number" class="config-input short" id="ed-cfg-espessura" value="4" min="1" max="20" onchange="syncMainFormatControlsFromEdition()">
-                    </div>
-                    <div class="config-row">
                         <label style="width: 60px;">Alinhar</label>
                         <div style="display: flex; gap: 4px; height: 22px;">
                             <button class="btn btn-icon-only align-btn active" id="ed-btn-align-left" onclick="setTextAlign('left')" title="Alinhar à esquerda" aria-pressed="true"><span class="material-symbols-outlined" style="font-size: 18px;">format_align_left</span></button>
                             <button class="btn btn-icon-only align-btn" id="ed-btn-align-center" onclick="setTextAlign('center')" title="Centralizar" aria-pressed="false"><span class="material-symbols-outlined" style="font-size: 18px;">format_align_center</span></button>
                             <button class="btn btn-icon-only align-btn" id="ed-btn-align-right" onclick="setTextAlign('right')" title="Alinhar à direita" aria-pressed="false"><span class="material-symbols-outlined" style="font-size: 18px;">format_align_right</span></button>
                         </div>
+                    </div>
+                    <div class="config-row">
+                        <label style="width: 60px;">Cor / Esp.</label>
+                        <input type="hidden" id="ed-cfg-cor" value="#107C41">
+                        <button class="color-trigger" type="button" data-color-picker title="Cores" aria-label="Escolher cor" aria-expanded="false"><span class="color-chip"></span><span class="picker-chevron"><svg class="caret-glyph" viewBox="0 0 24 24" aria-hidden="true"><path d="M7 10l5 5 5-5z"/></svg></span></button>
+                        <input type="number" class="config-input short" id="ed-cfg-espessura" value="4" min="1" max="20" onchange="syncMainFormatControlsFromEdition()">
                     </div>
                     <input type="hidden" id="ed-cfg-fonte" value="28">
                     <input type="hidden" id="ed-cfg-numero" value="1">

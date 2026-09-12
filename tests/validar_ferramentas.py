@@ -432,11 +432,11 @@ def main():
             return true;
         })()""")
         QTest.qWait(120)
-        js("finalizeTextEditor(true, true)")
+        js("finalizeTextEditor(true)")
         wait(lambda: js("annotations.length === 2"))
         check("annotations[1].type === 'Texto' && annotations[1].text.length > 20 && annotations[1].h > annotations[1].font")
         alto = js("annotations[1].h")
-        js("selectedIndex = 1; redraw()")
+        js("selectTool('Mover', false); selectedIndex = 1; redraw()")
         alca = json.loads(js("JSON.stringify(boxHandlePoints(annotations[1]).find(p => p.code === 's'))"))
         arrastar([canvas_point(alca["x"], alca["y"]), canvas_point(alca["x"], alca["y"] - 20),
                   canvas_point(alca["x"], alca["y"] - 40)])
@@ -460,11 +460,11 @@ def main():
             return true;
         })()""")
         QTest.qWait(120)
-        js("finalizeTextEditor(true, true)")
+        js("finalizeTextEditor(true)")
         wait(lambda: js("annotations.length === 1"))
         check("annotations[0].type === 'Chamada' && annotations[0].textW > 40")
         check("""(() => calloutTextLayout(surface(), annotations[0]).lines.length > 1)()""")
-        js("selectedIndex = 0; redraw()")
+        js("selectTool('Mover', false); selectedIndex = 0; redraw()")
         larguraAntes = js("calloutTextWidth(annotations[0])")
         alcaTexto = json.loads(js("JSON.stringify(rectHandlePoints(calloutTextRect(annotations[0])).find(p => p.code === 'e'))"))
         arrastar([canvas_point(alcaTexto["x"], alcaTexto["y"]),
@@ -492,8 +492,9 @@ def main():
             const fixa = {...larga, textH: 50, autoHeight: false};
             const reduzida = calloutTextLayout(c, fixa);
             if (!(reduzida.size < fixa.font && reduzida.size >= fixa.font * 0.25)) return false;
-            // A caixa fica encostada no fim do pe, dos dois lados.
-            const paraEsquerda = {...larga, w: -180};
+            // A caixa fica encostada no fim do pe, dos dois lados. As duas
+            // chamadas cabem inteiras na folha, que e o que o desenho garante.
+            const paraEsquerda = {...larga, x: 700, w: -180};
             const direita = calloutTextRect(larga);
             const esquerda = calloutTextRect(paraEsquerda);
             return direita.x > larga.x + larga.w && esquerda.x + esquerda.w < paraEsquerda.x + paraEsquerda.w
@@ -577,6 +578,156 @@ def main():
         })()""")
         print("OK: custo por evento do mouse constante ao riscar e ao sobrevoar")
 
+        # --- a ferramenta usada continua ativa ---
+        js("annotations.length = 0; selectedIndex = -1; clearStroke(); fitToWorkspace()")
+        for ferramenta in ("Retangulo", "Circulo", "Seta", "Caneta", "Balao", "Revisao"):
+            js(f"annotations.length = 0; selectedIndex = -1; selectTool('{ferramenta}', false)")
+            arrastar([canvas_point(120, 120), canvas_point(230, 200), canvas_point(300, 250)])
+            QTest.qWait(120)
+            assert js("currentTool") == ferramenta, f"{ferramenta} saiu para {js('currentTool')}"
+            assert js("annotations.length") == 1, ferramenta
+        # As de texto passam pelo editor flutuante e eram as que voltavam ao Mover.
+        for ferramenta in ("Texto", "Chamada", "CotaLivre", "CotaAngulo"):
+            js(f"annotations.length = 0; selectedIndex = -1; selectTool('{ferramenta}', false)")
+            if ferramenta == "Texto":
+                QTest.mouseClick(alvo, Qt.MouseButton.LeftButton, pos=canvas_point(150, 300))
+            else:
+                arrastar([canvas_point(120, 120), canvas_point(260, 200)])
+            wait(lambda: js("Boolean(activeTextEditor)"))
+            js("activeTextEditor.editor.value = 'ok'; finalizeTextEditor(true)")
+            QTest.qWait(120)
+            assert js("currentTool") == ferramenta, f"{ferramenta} saiu para {js('currentTool')}"
+            assert js("annotations.length") == 1, ferramenta
+        # Interromper continua sendo o caminho de volta para o Mover.
+        js("selectTool('Retangulo', false); interruptCommand()")
+        check("currentTool === 'Mover'")
+        js("annotations.length = 0; selectedIndex = -1; selectTool('Mover', false); redraw()")
+        print("OK: a ferramenta usada continua ativa; so o Interromper volta para o Mover")
+
+        # --- nada e desenhado fora da folha ---
+        js("annotations.length = 0; selectedIndex = -1; clearStroke(); fitToWorkspace()")
+        moldura = json.loads(js("JSON.stringify(canvas.getBoundingClientRect().toJSON())"))
+
+        def fora(dx, dy):
+            return QPoint(round(moldura["x"] + moldura["width"] + dx),
+                          round(moldura["y"] + moldura["height"] + dy))
+
+        for ferramenta in ("Retangulo", "Circulo", "Seta", "Linha", "Caneta", "Nuvem", "Balao", "Revisao"):
+            js(f"annotations.length = 0; selectedIndex = -1; selectTool('{ferramenta}', false)")
+            arrastar([canvas_point(940, 560), fora(60, 40), fora(180, 120)])
+            QTest.qWait(120)
+            dentro = js("""(() => {
+                const s = annotations[0];
+                if (!s) return 'sem marcacao';
+                const b = annotationBounds(s);
+                return (b.x >= -1 && b.y >= -1 && b.x + b.w <= docWidth + 1 && b.y + b.h <= docHeight + 1)
+                    ? '' : JSON.stringify(b) + ' fora de ' + docWidth + 'x' + docHeight;
+            })()""")
+            assert dentro == "", f"{ferramenta}: {dentro}"
+        # O editor de texto tambem nasce dentro, mesmo clicado na quina.
+        js("annotations.length = 0; selectedIndex = -1; selectTool('Texto', false)")
+        QTest.mouseClick(alvo, Qt.MouseButton.LeftButton, pos=canvas_point(985, 585))
+        wait(lambda: js("Boolean(activeTextEditor)"))
+        check("""(() => {
+            const r = activeTextEditor.editor.getBoundingClientRect();
+            const c = canvas.getBoundingClientRect();
+            return r.left >= c.left - 2 && r.top >= c.top - 2
+                && r.right <= c.right + 2 && r.bottom <= c.bottom + 2;
+        })()""")
+        js("activeTextEditor.editor.value = 'texto na quina'; finalizeTextEditor(true)")
+        QTest.qWait(120)
+        check("""(() => {
+            const b = annotationBounds(annotations[0]);
+            return b.x >= -1 && b.y >= -1 && b.x + b.w <= docWidth + 1 && b.y + b.h <= docHeight + 1;
+        })()""")
+        # A caixa da chamada espelha para o lado que cabe, sem mexer na ponta.
+        check("""(() => {
+            const base = {type: 'Chamada', color: '#000', thick: 3, font: 20, textW: 300,
+                          text: 'Texto da chamada perto da borda', autoHeight: true};
+            const folgado = {...base, x: 200, y: 300, w: 150, h: -40};
+            const naBorda = {...base, x: docWidth - 320, y: 300, w: 300, h: -40};
+            const r1 = calloutTextRect(folgado), r2 = calloutTextRect(naBorda);
+            // No meio da folha a caixa sai para a direita, como sempre saiu.
+            if (!(r1.dir === 1 && r1.x > folgado.x + folgado.w)) return false;
+            // Encostada na borda ela vai para o outro lado do pe, e cabe.
+            return r2.dir === -1 && r2.x >= 0 && r2.x + r2.w <= docWidth
+                && r2.x + r2.w < naBorda.x + naBorda.w;
+        })()""")
+        js("annotations.length = 0; selectedIndex = -1; selectTool('Mover', false); redraw()")
+        print("OK: marcacao, caixa de digitacao e caixa da chamada nao passam da folha")
+
+        # --- imagens da guia Edicao encaixam umas nas outras ---
+        check("""(() => {
+            const modoAntes = workspaceMode, itensAntes = editionItems;
+            const larguraAntes = docWidth, alturaAntes = docHeight;
+            try {
+                workspaceMode = 'edition';
+                docWidth = 1600; docHeight = 1000;
+                editionItems = [{x: 200, y: 200, w: 300, h: 200},
+                                {x: 800, y: 600, w: 240, h: 160}];
+                const movel = editionItems[1];
+                const tolerancia = editionSnapTolerance();
+                if (!(tolerancia > 0)) return false;
+
+                // Topo quase alinhado com o topo do outro: encaixa exato.
+                moveEditionItem(movel, 800, 200 + tolerancia * 0.5);
+                if (movel.y !== 200) return false;
+                if (!editionGuides.some(g => !g.vertical && g.at === 200)) return false;
+
+                // Base do movel quase na base do outro (200 + 200 = 400).
+                moveEditionItem(movel, 800, 400 - movel.h + tolerancia * 0.5);
+                if (movel.y !== 400 - movel.h) return false;
+
+                // Base do movel encostando no TOPO do outro: tambem encaixa.
+                moveEditionItem(movel, 800, 200 - movel.h - tolerancia * 0.5);
+                if (movel.y !== 200 - movel.h) return false;
+
+                // Centros alinhados na vertical (200 + 150 = 350 = meio do fixo).
+                moveEditionItem(movel, 350 - movel.w / 2 + tolerancia * 0.5, 700);
+                if (movel.x !== 350 - movel.w / 2) return false;
+
+                // Longe de tudo nao encaixa nem desenha linha.
+                moveEditionItem(movel, 900, 700);
+                if (movel.x !== 900 || movel.y !== 700 || editionGuides.length) return false;
+
+                // Redimensionar tambem encaixa: a borda direita procura a do
+                // outro, que fica em 200 + 300 = 500.
+                movel.x = 300; movel.y = 600; movel.w = 240; movel.h = 160;
+                resizeEditionItem(movel, {x: 500 + tolerancia * 0.5, y: 0});
+                if (Math.abs(movel.x + movel.w - 500) > 0.001) return false;
+
+                // Concluir o arrasto apaga as linhas de referencia.
+                finalizeEditionItemTransform(movel);
+                return editionGuides.length === 0;
+            } finally {
+                workspaceMode = modoAntes;
+                editionItems = itensAntes;
+                docWidth = larguraAntes; docHeight = alturaAntes;
+                editionGuides = [];
+            }
+        })()""")
+        print("OK: imagens da guia Edicao encaixam em borda e centro, com linha de referencia")
+
+        # --- com zoom alto a rolagem alcanca os quatro lados ---
+        js("fitToWorkspace()")
+        QTest.qWait(150)
+        js("zoomLevel = 3; applyZoom()")
+        QTest.qWait(250)
+        application.processEvents()
+        check("""(() => {
+            const w = byId('workspace'), c = byId('canvas-container');
+            w.scrollLeft = 0; w.scrollTop = 0;
+            const wr = w.getBoundingClientRect(), cr = c.getBoundingClientRect();
+            // Rolagem no inicio: a quina de cima e da esquerda tem de estar
+            // visivel. Com justify-content:center ela ficava em offset negativo,
+            // fora do alcance da barra de rolagem.
+            return cr.left - wr.left >= -1 && cr.top - wr.top >= -1
+                && w.scrollWidth > w.clientWidth && w.scrollHeight > w.clientHeight;
+        })()""")
+        js("fitToWorkspace()")
+        QTest.qWait(150)
+        print("OK: com zoom alem da janela a rolagem alcanca a quina de cima e da esquerda")
+
         # --- alcas mantem o tamanho aparente com o zoom ---
         check("""(() => {
             const antes = screenUnits(9);
@@ -589,6 +740,28 @@ def main():
             return depois < antes * 0.75;
         })()""")
         print("OK: alcas e tolerancias medidas em pixels de tela")
+
+        # --- as tres linhas da Formatacao terminam na mesma vertical ---
+        check("""(() => {
+            const conferir = prefixo => {
+                const faixa = byId(prefixo + 'btn-align-left').closest('.ribbon-content');
+                const ativa = faixa.classList.contains('active');
+                faixa.classList.add('active');
+                const fim = id => byId(prefixo + id).getBoundingClientRect().right;
+                const topo = id => byId(prefixo + id).getBoundingClientRect().top;
+                const resultado =
+                    // Alinhar fica entre Estilo e Cor / Esp.
+                    topo('btn-underline') < topo('btn-align-left')
+                    && topo('btn-align-left') < topo('cfg-espessura')
+                    // e as tres linhas acabam na mesma vertical.
+                    && Math.abs(fim('btn-underline') - fim('btn-align-right')) <= 0.5
+                    && Math.abs(fim('btn-underline') - fim('cfg-espessura')) <= 0.5;
+                if (!ativa) faixa.classList.remove('active');
+                return resultado;
+            };
+            return conferir('') && conferir('ed-');
+        })()""")
+        print("OK: Alinhar entre Estilo e Cor / Esp., com as tres linhas alinhadas a direita")
 
         # --- faixa de opcoes cabe inteira no tamanho minimo ---
         window.resize(capture.RIBBON_MIN_WIDTH, 600)

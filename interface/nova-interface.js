@@ -423,6 +423,7 @@ function updateMaximizeIcon(maximized) {
 
 function selectTool(toolName, announce = true) {
     closeFormatPopover();
+    clearEditionGuides();
     document.querySelectorAll(".tool-btn").forEach(item => {
         item.classList.toggle("active", item.dataset.tool === toolName);
     });
@@ -845,22 +846,93 @@ function editionImageHandle(item) {
     return {x: item.x + item.w, y: item.y + item.h};
 }
 
+// Encaixe entre imagens, como no PowerPoint: ao arrastar, as bordas e o centro
+// da imagem procuram as bordas e o centro das outras - e as da folha. Dentro da
+// tolerancia a imagem da a travadinha e a linha de referencia aparece enquanto o
+// encaixe vale. A tolerancia e medida em pixels de tela, entao o encaixe pega do
+// mesmo jeito com a folha inteira na janela ou com o zoom no talo.
+let editionGuides = [];
+
+function clearEditionGuides() {
+    if (editionGuides.length) editionGuides = [];
+}
+
+function editionSnapTargets(skipIndex) {
+    const vertical = [0, docWidth / 2, docWidth];
+    const horizontal = [0, docHeight / 2, docHeight];
+    editionItems.forEach((other, index) => {
+        if (index === skipIndex) return;
+        vertical.push(other.x, other.x + other.w / 2, other.x + other.w);
+        horizontal.push(other.y, other.y + other.h / 2, other.y + other.h);
+    });
+    return {vertical, horizontal};
+}
+
+function nearestTarget(value, targets, tolerance) {
+    let best = null;
+    targets.forEach(target => {
+        const distance = Math.abs(value - target);
+        if (distance <= tolerance && (!best || distance < best.distance)) best = {distance, target};
+    });
+    return best;
+}
+
+// As tres referencias da imagem no eixo - inicio, meio e fim - procuram cada
+// alvo; vence a aproximacao mais curta, e ela devolve onde a imagem tem de
+// comecar para ficar encaixada.
+function snapEditionAxis(start, size, targets, tolerance) {
+    let best = null;
+    [0, size / 2, size].forEach(offset => {
+        const found = nearestTarget(start + offset, targets, tolerance);
+        if (found && (!best || found.distance < best.distance)) {
+            best = {distance: found.distance, start: found.target - offset, line: found.target};
+        }
+    });
+    return best;
+}
+
+function editionSnapTolerance() {
+    return screenUnits(6);
+}
+
 function moveEditionItem(item, x, y) {
-    item.x = x;
-    item.y = y;
+    const targets = editionSnapTargets(editionItems.indexOf(item));
+    const tolerance = editionSnapTolerance();
+    const horizontal = snapEditionAxis(x, item.w, targets.vertical, tolerance);
+    const vertical = snapEditionAxis(y, item.h, targets.horizontal, tolerance);
+    item.x = horizontal ? horizontal.start : x;
+    item.y = vertical ? vertical.start : y;
+    editionGuides = [];
+    if (horizontal) editionGuides.push({vertical: true, at: horizontal.line});
+    if (vertical) editionGuides.push({vertical: false, at: vertical.line});
 }
 
 function resizeEditionItem(item, point) {
     const minSize = 40;
-    const ratio = item.image && item.image.naturalWidth
+    const ratio = Math.max(0.01, item.image && item.image.naturalWidth
         ? item.image.naturalHeight / Math.max(1, item.image.naturalWidth)
-        : item.h / Math.max(1, item.w);
-    const newWidth = Math.max(minSize, point.x - item.x);
-    item.w = newWidth;
-    item.h = Math.max(minSize, newWidth * ratio);
+        : item.h / Math.max(1, item.w));
+    let width = Math.max(minSize, point.x - item.x);
+    const targets = editionSnapTargets(editionItems.indexOf(item));
+    const tolerance = editionSnapTolerance();
+    const direita = nearestTarget(item.x + width, targets.vertical, tolerance);
+    const baixo = nearestTarget(item.y + width * ratio, targets.horizontal, tolerance);
+    editionGuides = [];
+    // A proporcao fica travada ao redimensionar, entao so uma das duas bordas
+    // pode encaixar: vence a que estiver mais perto do alvo dela.
+    if (direita && (!baixo || direita.distance <= baixo.distance)) {
+        width = Math.max(minSize, direita.target - item.x);
+        editionGuides.push({vertical: true, at: direita.target});
+    } else if (baixo) {
+        width = Math.max(minSize, (baixo.target - item.y) / ratio);
+        editionGuides.push({vertical: false, at: baixo.target});
+    }
+    item.w = width;
+    item.h = Math.max(minSize, width * ratio);
 }
 
 function finalizeEditionItemTransform(item) {
+    clearEditionGuides();
     if (!item) return;
     if (expandEditionCanvasToFit(item)) applyZoom();
 }
@@ -1583,7 +1655,7 @@ function canvasScale() {
 function finishActiveCommand(commit = true) {
     let handled = false;
     if (activeTextEditor) {
-        finalizeTextEditor(commit, false);
+        finalizeTextEditor(commit);
         handled = true;
     }
     if (orthogonalPath) {
@@ -1680,8 +1752,6 @@ function createFloatingTextEditor({kind, point, options, shape = null, editIndex
     const editor = document.createElement("textarea");
     editor.className = "canvas-text-editor";
     editor.placeholder = placeholder || "Digite o texto";
-    editor.style.left = `${point.x * scale.x}px`;
-    editor.style.top = `${point.y * scale.y}px`;
     const compact = kind === "shapeLabel" || kind === "editShapeLabel";
     // A chamada digita na mesma caixa em que o texto vai aparecer.
     const callout = options.type === "Chamada";
@@ -1691,8 +1761,22 @@ function createFloatingTextEditor({kind, point, options, shape = null, editIndex
     const heightCanvas = callout
         ? Math.max(options.font * 1.7, Number(options.textH) || 0)
         : (kind === "editText" && options.h ? options.h : Math.max(compact ? 34 : 70, options.font * (compact ? 1.7 : 2.6)));
-    editor.style.width = `${widthCanvas * scale.x}px`;
-    editor.style.height = `${heightCanvas * scale.y}px`;
+    // A caixa de digitacao tambem nao passa da folha. Ela mantem o tamanho que
+    // pediu e recua para dentro, em vez de encolher: clicar a dois pixels da
+    // borda daria uma caixa de dois pixels. Sem isso o texto era digitado por
+    // cima do cinza, fora da area que sai na imagem.
+    const caixaW = Math.min(widthCanvas, docWidth);
+    const caixaH = Math.min(heightCanvas, docHeight);
+    const caixaX = Math.max(0, Math.min(point.x, docWidth - caixaW));
+    const caixaY = Math.max(0, Math.min(point.y, docHeight - caixaH));
+    // O piso de 60x28 px do CSS e medido na tela; numa folha minuscula ele
+    // estouraria o limite acima, entao cede junto.
+    editor.style.minWidth = `${Math.min(60, caixaW * scale.x)}px`;
+    editor.style.minHeight = `${Math.min(28, caixaH * scale.y)}px`;
+    editor.style.left = `${caixaX * scale.x}px`;
+    editor.style.top = `${caixaY * scale.y}px`;
+    editor.style.width = `${caixaW * scale.x}px`;
+    editor.style.height = `${caixaH * scale.y}px`;
     editor.style.color = options.color;
     const editorFont = options.type === "Balao"
         ? balloonFontSize(options)
@@ -1705,7 +1789,7 @@ function createFloatingTextEditor({kind, point, options, shape = null, editIndex
     if (editorAlignsText(kind, options)) editor.style.textAlign = options.align || "left";
     editor.value = initialText;
     canvasContainer.appendChild(editor);
-    activeTextEditor = {kind, editor, x: point.x, y: point.y, options, shape, editIndex};
+    activeTextEditor = {kind, editor, x: caixaX, y: caixaY, options, shape, editIndex};
     // Redesenha já: a anotação sob o editor precisa perder o texto agora, não
     // só no próximo quadro que algum outro evento provocar.
     if (Number.isInteger(editIndex)) redraw();
@@ -1716,14 +1800,15 @@ function createFloatingTextEditor({kind, point, options, shape = null, editIndex
     // ajustável pela alça do textarea) — comportamento orgânico tipo PowerPoint.
     const autoGrowEditor = () => {
         editor.style.height = "auto";
-        editor.style.height = `${editor.scrollHeight}px`;
+        const teto = (docHeight - caixaY) * canvasScale().y;
+        editor.style.height = `${Math.min(editor.scrollHeight, Math.max(28, teto))}px`;
     };
     editor.addEventListener("input", autoGrowEditor);
     editor.addEventListener("keydown", event => {
         if (event.key === "Escape") {
             event.preventDefault();
             event.stopPropagation();
-            finalizeTextEditor(true, true);
+            finalizeTextEditor(true);
         }
     });
     window.setTimeout(autoGrowEditor, 0);
@@ -1736,7 +1821,7 @@ function createFloatingTextEditor({kind, point, options, shape = null, editIndex
     setStatus(status);
 }
 
-function finalizeTextEditor(commit = true, switchToMover = true) {
+function finalizeTextEditor(commit = true) {
     if (!activeTextEditor) return;
     const {kind, editor, options, shape, editIndex} = activeTextEditor;
     const text = editor.value.trim();
@@ -1768,13 +1853,13 @@ function finalizeTextEditor(commit = true, switchToMover = true) {
                     ? Math.max(edited.h || 0, (edited.font || 18) * 1.2)
                     : Math.max(edited.h || 0, editorH);
             }
+            keepInsideDocument(edited);
             selectedIndex = editIndex;
             setStatus("Texto atualizado.");
             scheduleClipboardSync();
         } else {
             setStatus("Edição cancelada.");
         }
-        if (switchToMover) selectTool("Mover", false);
         redraw();
         return;
     }
@@ -1796,14 +1881,13 @@ function finalizeTextEditor(commit = true, switchToMover = true) {
     activeTextEditor = null;
     if (commit && (kind === "shapeLabel" || text)) {
         pushHistory();
-        annotations.push(annotation);
+        annotations.push(keepInsideDocument(annotation));
         selectedIndex = annotations.length - 1;
         setStatus(kind === "shapeLabel" ? "Anotação inserida." : "Texto inserido.");
         scheduleClipboardSync();
     } else {
         setStatus(kind === "shapeLabel" ? "Anotação cancelada." : "Texto cancelado.");
     }
-    if (switchToMover) selectTool("Mover", false);
     redraw();
 }
 
@@ -1904,12 +1988,44 @@ function updateHoverCursor(point) {
     canvas.style.cursor = "default";
 }
 
+// O ponteiro e limitado a folha. Antes, comecar um retangulo perto da borda e
+// arrastar para fora deixava metade da marcacao do lado de la do canvas: ela
+// existia, contava para o desfazer, e so aparecia depois de arrastada de volta
+// com o Mover. Limitar aqui vale para todas as ferramentas de uma vez - o
+// desenho, o traco a mao livre, o arrasto das alcas e o ponto do editor de texto
+// passam todos por esta funcao.
 function getMousePos(event) {
     const rect = canvas.getBoundingClientRect();
-    return {
+    return clampToDocument({
         x: (event.clientX - rect.left) * docWidth / Math.max(1, rect.width),
         y: (event.clientY - rect.top) * docHeight / Math.max(1, rect.height)
+    });
+}
+
+function clampToDocument(point) {
+    return {
+        x: Math.max(0, Math.min(docWidth, point.x)),
+        y: Math.max(0, Math.min(docHeight, point.y))
     };
+}
+
+// Rede de seguranca para o que nao nasce do ponteiro: o circulo do balao cresce
+// com o numero de caracteres, o triangulo tem altura propria e a nuvem livre
+// estufa para fora do traco. Depois de pronta, a marcacao que passou da folha
+// volta inteira para dentro - deslocada, nunca deformada.
+function keepInsideDocument(shape) {
+    if (!shape) return shape;
+    // A chamada tem tratamento proprio em calloutTextRect: arrastar a seta
+    // atras da caixa de texto moveria a ponta para longe do que ela aponta.
+    if (shape.type === "Chamada") return shape;
+    const bounds = annotationBounds(shape);
+    if (!bounds) return shape;
+    const dx = bounds.w <= docWidth
+        ? Math.max(0, -bounds.x) - Math.max(0, bounds.x + bounds.w - docWidth) : 0;
+    const dy = bounds.h <= docHeight
+        ? Math.max(0, -bounds.y) - Math.max(0, bounds.y + bounds.h - docHeight) : 0;
+    if (dx || dy) shiftAnnotation(shape, dx, dy);
+    return shape;
 }
 
 document.addEventListener("mousedown", event => {
@@ -1924,13 +2040,13 @@ document.addEventListener("mousedown", event => {
         if (event.target.closest(".style-btn")) event.preventDefault();
         return;
     }
-    finalizeTextEditor(true, true);
+    finalizeTextEditor(true);
 }, true);
 
 canvas.addEventListener("mousedown", event => {
     if (!ensureImage()) return;
     if (activeTextEditor) {
-        finalizeTextEditor(true, true);
+        finalizeTextEditor(true);
         event.preventDefault();
         return;
     }
@@ -1989,7 +2105,8 @@ canvas.addEventListener("mousedown", event => {
         }
         const numberInput = byId("cfg-numero");
         pushHistory();
-        annotations.push({type: "Revisao", x: point.x, y: point.y, text: String(numberInput.value || "R"), ...options});
+        annotations.push(keepInsideDocument(
+            {type: "Revisao", x: point.x, y: point.y, text: String(numberInput.value || "R"), ...options}));
         selectedIndex = annotations.length - 1;
         if (autoSequence.Revisao) numberInput.value = nextSequenceText(numberInput.value || "R");
         persistPreferences();
@@ -2008,7 +2125,8 @@ canvas.addEventListener("mousedown", event => {
         if (!options.lineBalloon) {
             const numberInput = byId("cfg-numero");
             pushHistory();
-            annotations.push({type: "Balao", x: point.x, y: point.y, w: 0, h: 0, text: String(numberInput.value), ...options});
+            annotations.push(keepInsideDocument(
+                {type: "Balao", x: point.x, y: point.y, w: 0, h: 0, text: String(numberInput.value), ...options}));
             if (autoSequence.Balao) numberInput.value = nextSequenceText(numberInput.value || "1");
             persistPreferences();
             redraw();
@@ -2145,13 +2263,12 @@ function finishDrawing(event) {
             startPoint = null;
             clearStroke();
             cropToShape(cropShape);
-            selectTool("Mover", false);
             return;
         } else if (currentTool === "Balao") {
             const numberInput = byId("cfg-numero");
             preview.text = String(numberInput.value || "1");
             pushHistory();
-            annotations.push(preview);
+            annotations.push(keepInsideDocument(preview));
             selectedIndex = annotations.length - 1;
             if (autoSequence.Balao) numberInput.value = nextSequenceText(numberInput.value || "1");
             persistPreferences();
@@ -2166,7 +2283,7 @@ function finishDrawing(event) {
             return;
         } else {
             pushHistory();
-            annotations.push(preview);
+            annotations.push(keepInsideDocument(preview));
             committed = true;
         }
     }
@@ -2293,9 +2410,30 @@ function drawEditionWorkspace() {
         if (source) ctx.drawImage(source, item.x, item.y, item.w, item.h);
         if (index === selectedEditionItemIndex) drawEditionImageSelection(item);
     });
+    drawEditionGuides();
     annotations.forEach((annotation, index) =>
         drawShape(ctx, drawableAnnotation(annotation, index), index === selectedIndex));
     if (preview) drawShape(ctx, preview, false, true);
+    ctx.restore();
+}
+
+function drawEditionGuides() {
+    if (!editionGuides.length) return;
+    ctx.save();
+    ctx.strokeStyle = "#D13438";
+    ctx.lineWidth = screenUnits(1);
+    ctx.setLineDash([screenUnits(6), screenUnits(4)]);
+    editionGuides.forEach(guide => {
+        ctx.beginPath();
+        if (guide.vertical) {
+            ctx.moveTo(guide.at, 0);
+            ctx.lineTo(guide.at, docHeight);
+        } else {
+            ctx.moveTo(0, guide.at);
+            ctx.lineTo(docWidth, guide.at);
+        }
+        ctx.stroke();
+    });
     ctx.restore();
 }
 
@@ -2639,20 +2777,34 @@ function calloutTextRect(shape, layout = null) {
     const endX = shape.x + (shape.w || 0);
     const endY = shape.y + (shape.h || 0);
     const offset = calloutLanding(shape) + 6;
+    // Perto da borda a caixa passava da folha e o texto ficava escondido. Em vez
+    // de arrastar a chamada inteira - o que tiraria a ponta da seta de cima do
+    // que ela aponta - a caixa espelha para o outro lado do pe, como uma chamada
+    // de prancha faz. So quando nem espelhada cabe e que ela e encostada na
+    // borda; ai a linha do pe segue o lado escolhido aqui.
+    const cabe = x => x >= 0 && x + width <= docWidth;
+    const preferido = dir > 0 ? endX + offset : endX - offset - width;
+    const espelhado = dir > 0 ? endX - offset - width : endX + offset;
+    const ladoUtil = cabe(preferido) || !cabe(espelhado) ? dir : -dir;
+    const x = cabe(preferido) || !cabe(espelhado) ? preferido : espelhado;
     return {
-        x: dir > 0 ? endX + offset : endX - offset - width,
-        y: endY - height / 2,
+        x: width <= docWidth ? Math.max(0, Math.min(x, docWidth - width)) : x,
+        y: height <= docHeight ? Math.max(0, Math.min(endY - height / 2, docHeight - height)) : endY - height / 2,
         w: width,
         h: height,
-        dir
+        dir: ladoUtil
     };
 }
 
 function drawCallout(context, shape) {
     const endX = shape.x + shape.w;
     const endY = shape.y + shape.h;
-    const dir = shape.w >= 0 ? 1 : -1;
     const landing = calloutLanding(shape);
+    // A caixa e medida antes do desenho porque e ela quem decide o lado: perto
+    // da borda ela espelha, e o pe tem de sair no mesmo lado em que ela ficou.
+    const layout = calloutTextLayout(context, shape);
+    const rect = calloutTextRect(shape, layout);
+    const dir = rect.dir;
 
     drawArrow(context, endX, endY, shape.x, shape.y, shape.thick, shape.font);
     context.beginPath();
@@ -2661,8 +2813,6 @@ function drawCallout(context, shape) {
     context.stroke();
 
     if (!shape.text || shape.textHidden) return;
-    const layout = calloutTextLayout(context, shape);
-    const rect = calloutTextRect(shape, layout);
     context.save();
     context.textAlign = "left";
     context.textBaseline = "top";
