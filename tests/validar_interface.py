@@ -1,6 +1,7 @@
 """Exercise the actual Qt/WebChannel UI in an isolated copy, without user data."""
 
 import json
+import os
 import shutil
 import sys
 import tempfile
@@ -197,6 +198,32 @@ def main():
         depois = registro.read_text(encoding="utf-8").count("falha de teste")
         assert depois == antes, f"erro repetido entrou mais {depois - antes} vezes"
         print("OK: erro da interface registrado com pilha e avisado na barra de estado")
+
+        # --- o modo de desenho e escolhido antes de o Qt subir ---
+        # A escolha e feita no import do app.py, antes da QApplication existir:
+        # por isso ela le o arquivo direto, sem passar pelas configuracoes ja
+        # carregadas. E por isso tambem que ela nao pode falhar por nada.
+        preferencias = (folder / "configuracoes.json").read_text(encoding="utf-8")
+        modo_base = capture._BASE_DIR_BOOT
+        try:
+            capture._BASE_DIR_BOOT = folder
+            (folder / "configuracoes.json").write_text('{"software_render": true}', encoding="utf-8")
+            assert capture._quer_software() is True
+            (folder / "configuracoes.json").write_text('{"software_render": false}', encoding="utf-8")
+            assert capture._quer_software() is False
+            # A variavel de ambiente vence o arquivo: e o socorro de quem nao
+            # consegue nem abrir o programa para mexer no ajuste.
+            os.environ["SUPER_CAPTURA_SOFTWARE"] = "1"
+            assert capture._quer_software() is True
+            del os.environ["SUPER_CAPTURA_SOFTWARE"]
+            # Arquivo ilegivel nao pode impedir o programa de abrir.
+            (folder / "configuracoes.json").write_text("{quebrado", encoding="utf-8")
+            assert capture._quer_software() is False
+        finally:
+            capture._BASE_DIR_BOOT = modo_base
+            os.environ.pop("SUPER_CAPTURA_SOFTWARE", None)
+            (folder / "configuracoes.json").write_text(preferencias, encoding="utf-8")
+        print("OK: modo de desenho lido da preferencia, do ambiente e a prova de arquivo quebrado")
 
         # --- preferencia da faixa sobrevive a ida ao disco ---
         # A ponte so grava as chaves que conhece: text_align e auto_sequence

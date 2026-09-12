@@ -24,6 +24,13 @@ escrita, o arquivo vai para %LOCALAPPDATA%\SuperCaptura.
 Ao relatar um problema, mande esse arquivo junto: e ele que diz o que houve na
 sua maquina.
 
+Se a tela apresentar falhas de desenho (partes que nao aparecem, cores erradas,
+piscadas), o desenho pode voltar a ser feito pelo processador: abra o
+configuracoes.json e troque "software_render": false por true, ou inicie o
+programa com a variavel de ambiente SUPER_CAPTURA_SOFTWARE=1. Fica mais lento -
+medido nesta janela, 15 quadros por segundo contra 60 - mas nao depende do
+video da maquina. O modo em uso aparece na primeira linha do diagnostico.log.
+
 RECURSOS
 --------
 - Atualizacoes por GitHub Releases: verificacao ao abrir e instalacao com

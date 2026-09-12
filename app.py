@@ -18,9 +18,35 @@ from typing import Callable, Optional
 import diagnostico
 from atualizacao.atualizador import AppInstance, read_version, write_json
 
+# A composicao por software prendia a interface em 15 quadros por segundo
+# assim que algo era desenhado - medido nesta janela: 66,6 ms por quadro com
+# qualquer conteudo, contra 16,7 ms com a aceleracao ligada. Era isso que fazia
+# o traco da caneta parecer atrasado e o arraste das imagens pesar.
+#
+# A aceleracao depende do video da maquina. O Chromium ja desliga sozinho o que
+# nao funciona, mas fica um caminho de volta manual: "software_render": true no
+# configuracoes.json, ou SUPER_CAPTURA_SOFTWARE=1 no ambiente. A faixa de opcoes
+# nao ganhou um interruptor porque as tres guias ja ocupam a largura minima
+# inteira - nao cabe mais nada nela sem crescer a janela. O modo em uso e
+# anotado no diagnostico.log, que e por onde isso vai ser diagnosticado.
+_BASE_DIR_BOOT = Path(__file__).resolve().parent
+
+
+def _quer_software() -> bool:
+    if os.environ.get("SUPER_CAPTURA_SOFTWARE") == "1":
+        return True
+    try:
+        dados = json.loads((_BASE_DIR_BOOT / "configuracoes.json").read_text(encoding="utf-8"))
+        return bool(dados.get("software_render"))
+    except Exception:
+        return False
+
+
+SOFTWARE_RENDER = _quer_software()
 os.environ.setdefault(
     "QTWEBENGINE_CHROMIUM_FLAGS",
-    "--disable-gpu --disable-gpu-compositing --disable-features=CalculateNativeWinOcclusion",
+    ("--disable-gpu --disable-gpu-compositing --disable-features=CalculateNativeWinOcclusion"
+     if SOFTWARE_RENDER else "--disable-features=CalculateNativeWinOcclusion"),
 )
 
 from PySide6.QtCore import QEvent, QObject, QRect, Qt, QTimer, QUrl, Slot
@@ -125,6 +151,7 @@ def default_settings() -> dict:
         "underline": False,
         "text_align": "left",
         "auto_sequence": {"Balao": True, "Revisao": True},
+        "software_render": False,
         "image_folder": str(DEFAULT_IMAGE_DIR),
         "video_folder": str(DEFAULT_VIDEO_DIR),
         "last_save_dir": "",
@@ -763,6 +790,7 @@ class Bridge(QObject):
             "color", "thickness", "font_size", "number", "balloon_fill", "balloon_line",
             "review_fill", "cloud_free", "text_autogrow", "tool_sizes",
             "bold", "italic", "underline", "text_align", "auto_sequence",
+            "software_render",
             "pen_thickness", "highlighter_thickness", "recent_colors",
         }
         if isinstance(incoming, dict):
@@ -1267,10 +1295,13 @@ def main() -> None:
     except Exception:
         pass
     _apply_windows_app_identity()
-    try:
-        QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseSoftwareOpenGL, True)
-    except Exception as exc:
-        diagnostico.falha("Nao foi possivel forcar o OpenGL por software", exc)
+    if SOFTWARE_RENDER:
+        try:
+            QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseSoftwareOpenGL, True)
+        except Exception as exc:
+            diagnostico.falha("Nao foi possivel forcar o OpenGL por software", exc)
+    diagnostico.registrar(
+        "Desenho: " + ("software (por ajuste)" if SOFTWARE_RENDER else "acelerado pelo video"))
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("Edflávio Calavort")

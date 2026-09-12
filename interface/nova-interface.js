@@ -1061,16 +1061,22 @@ function downscaleInSteps(image, width, height, target = null) {
     destino.height = height;
     const destinoCtx = destino.getContext("2d");
     destinoCtx.imageSmoothingEnabled = true;
-    destinoCtx.imageSmoothingQuality = "low";
+    // Só o passo final pede a reamostragem boa. Os anteriores são reduções
+    // exatas de 2x, em que ela não muda nada; e este roda uma vez por
+    // enquadramento, não por quadro - foi por isso que ela cabia aqui.
+    destinoCtx.imageSmoothingQuality = "high";
     destinoCtx.drawImage(source, 0, 0, currentWidth, currentHeight, 0, 0, width, height);
     return destino;
 }
 
 function backgroundRenderSource(scale) {
-    // Com zoom bem reduzido o fundo encolhe mais da metade; aí vale guardar uma
-    // cópia reduzida em etapas, senão a captura fica granulada.
+    // Reduzir a captura a cada quadro, num passo só e com reamostragem simples,
+    // é o que tira a nitidez do texto miúdo. A cópia preparada é feita UMA vez,
+    // em etapas e com a reamostragem boa no passo final, e daí em diante cada
+    // quadro desenha 1:1. Antes isso só valia abaixo de 55% - justamente a faixa
+    // em que a perda já era grosseira; o estrago fino ficava de fora.
     if (!bgImage) return null;
-    if (scale > 0.55) return bgImage;
+    if (scale > 0.99) return bgImage;
     const width = Math.max(1, Math.round(docWidth * scale));
     const height = Math.max(1, Math.round(docHeight * scale));
     const stale = bgProxySource !== bgImage
@@ -1150,9 +1156,13 @@ function editionRenderSource(item) {
     if (!item.image) return null;
     // Com recorte, o pedaco visivel ocupa item.w: a imagem inteira precisa de
     // uma copia proporcionalmente maior para o pedaco sair na resolucao certa.
+    // E a medida e a da TELA, nao a do documento: a copia era feita no tamanho
+    // do documento e depois reduzida de novo pela escala de desenho, entao a
+    // foto passava por duas reducoes em vez de uma.
     const recorte = itemCrop(item);
-    const width = Math.max(1, Math.round(Math.abs(item.w) / recorte.w));
-    const height = Math.max(1, Math.round(Math.abs(item.h) / recorte.h));
+    const escala = Math.max(1, renderScale());
+    const width = Math.max(1, Math.round(Math.abs(item.w) * escala / recorte.w));
+    const height = Math.max(1, Math.round(Math.abs(item.h) * escala / recorte.h));
     const natural = item.image.naturalWidth || item.image.width || width;
     if (natural <= width * 1.15) return item.image;
     const stale = !item.proxyWidth || Math.abs(item.proxyWidth - width) > Math.max(4, width * 0.2);
@@ -4839,7 +4849,28 @@ function screenPixelRatio() {
     // reduzido pelo navegador: é essa redução que apaga o serrilhado das bordas
     // da caneta, do marca-texto e de todas as marcações.
     const ratio = Number(window.devicePixelRatio) || 1;
-    return Math.min(4, Math.max(RENDER_OVERSAMPLE, ratio));
+    // E nunca menos do que a própria imagem tem. Uma captura de 2560 px exibida
+    // em 1141 px de tela virava um buffer de 2282: 11% do detalhe era jogado
+    // fora ANTES de a tela reduzir o resto. O teto de memória (MAX_RENDER_PIXELS
+    // em applyZoom) continua valendo, então imagem enorme com zoom alto não
+    // estoura - só deixa de perder detalhe à toa quando cabe.
+    const nativo = sourceNativeWidth();
+    const exibido = Math.max(1, docWidth * zoomLevel);
+    const paraCobrir = nativo ? nativo / exibido : 0;
+    return Math.min(4, Math.max(RENDER_OVERSAMPLE, ratio, paraCobrir));
+}
+
+// Largura real da imagem que está sendo exibida, em pixels dela mesma.
+function sourceNativeWidth() {
+    if (workspaceMode === "edition") {
+        return editionItems.reduce((maior, item) => {
+            if (!item.image || !item.w) return maior;
+            const natural = item.image.naturalWidth || item.image.width || 0;
+            // Quantos pixels da foto cabem em cada pixel do documento.
+            return Math.max(maior, docWidth * (natural / itemCrop(item).w) / Math.abs(item.w));
+        }, 0);
+    }
+    return bgImage ? (bgImage.naturalWidth || bgImage.width || 0) : 0;
 }
 
 function applyZoom() {

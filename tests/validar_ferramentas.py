@@ -1065,6 +1065,74 @@ def main():
         QTest.qWait(150)
         print("OK: com zoom alem da janela a rolagem alcanca a quina de cima e da esquerda")
 
+        # --- o buffer guarda a captura inteira, sem jogar detalhe fora ---
+        js("""
+            window.grande = document.createElement('canvas');
+            grande.width = 2560; grande.height = 1440;
+            const p = grande.getContext('2d');
+            p.fillStyle = '#ffffff'; p.fillRect(0, 0, 2560, 1440);
+            p.fillStyle = '#111';
+            for (let y = 24; y < 1440; y += 20) {
+                p.font = '14px Segoe UI';
+                p.fillText('texto miudo de teste ' + y + ' iiii llll 0123456789', 24, y);
+            }
+            window.imagemGrande = grande;
+            loadImageData(grande.toDataURL(), false, false);
+        """)
+        wait(lambda: js("Boolean(bgImage && bgImage.naturalWidth === 2560)"))
+        QTest.qWait(400)
+        js("fitToWorkspace()")
+        QTest.qWait(400)
+        application.processEvents()
+        check("""(() => {
+            // Com a folha inteira na janela, o buffer tem de cobrir a resolucao
+            // da propria captura: era ai que 11% do detalhe se perdia antes de a
+            // tela reduzir o resto.
+            if (canvas.width < bgImage.naturalWidth - 2) return false;
+            // E a copia preparada do fundo passa a valer para qualquer reducao.
+            if (backgroundRenderSource(0.9) === bgImage) return false;
+            // Sem reducao nenhuma ela nao e feita: desenhar 1:1 ja e o melhor.
+            return backgroundRenderSource(1) === bgImage;
+        })()""")
+        # O teto de memoria continua mandando: imagem enorme com zoom alto nao
+        # pode estourar o buffer so para nao perder detalhe.
+        check("""(() => {
+            const zoomAntes = zoomLevel;
+            zoomLevel = 3;
+            applyZoom();
+            const pixels = canvas.width * canvas.height;
+            zoomLevel = zoomAntes;
+            applyZoom();
+            return pixels <= MAX_RENDER_PIXELS * 1.02;
+        })()""")
+        # A foto da guia Edicao tambem: a copia e feita na resolucao da TELA.
+        check("""(() => {
+            const modoAntes = workspaceMode, itensAntes = editionItems;
+            const larguraAntes = docWidth, alturaAntes = docHeight;
+            try {
+                workspaceMode = 'edition';
+                docWidth = 1600; docHeight = 1000;
+                editionItems = [{x: 0, y: 0, w: 400, h: 225, image: imagemGrande}];
+                const item = editionItems[0];
+                const fonte = editionRenderSource(item);
+                // Sem a escala de desenho a copia sairia com 400 px de largura e
+                // seria reduzida de novo na hora de desenhar: duas reducoes.
+                const esperado = Math.round(400 * Math.max(1, renderScale()));
+                return fonte !== item.image && Math.abs(item.proxyWidth - esperado) <= 1;
+            } finally {
+                workspaceMode = modoAntes;
+                editionItems = itensAntes;
+                docWidth = larguraAntes; docHeight = alturaAntes;
+            }
+        })()""")
+        # Volta para a folha de sempre.
+        js("loadImageData(sample.toDataURL(), false, false)")
+        wait(lambda: js("Boolean(bgImage && bgImage.naturalWidth === 1000)"))
+        QTest.qWait(300)
+        js("annotations.length = 0; selectedIndex = -1; fitToWorkspace()")
+        QTest.qWait(200)
+        print("OK: buffer cobre a resolucao da imagem, com teto de memoria e sem reducao dupla")
+
         # --- alcas mantem o tamanho aparente com o zoom ---
         check("""(() => {
             const antes = screenUnits(9);
