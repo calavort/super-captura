@@ -1717,6 +1717,99 @@ def main():
         })()""")
         print("OK: Alinhar entre Estilo e Cor / Esp., com as tres linhas alinhadas a direita")
 
+        # --- todo botao da faixa responde a alguma coisa ---
+        # Auditoria de todos os botoes, guia por guia. A parte estatica confere
+        # que o handler existe; a dinamica clica nos que nao abrem janela do
+        # Windows e confere que nenhum deles quebra em silencio.
+        check("""(() => {
+            const semHandler = [];
+            document.querySelectorAll('button, .ribbon-tab').forEach(botao => {
+                const acao = botao.getAttribute('onclick');
+                if (acao) {
+                    // O nome chamado tem de existir de verdade.
+                    const nome = acao.match(/^\s*([A-Za-z_$][\w$]*)\s*\(/);
+                    if (nome && typeof window[nome[1]] !== 'function'
+                        && !acao.startsWith('this.')) {
+                        semHandler.push((botao.id || botao.textContent.trim()) + ' -> ' + nome[1]);
+                    }
+                    return;
+                }
+                // Sem onclick, o botao precisa ser um dos que recebem listener.
+                const temListener = botao.classList.contains('tool-btn')
+                    || botao.classList.contains('style-btn')
+                    || botao.classList.contains('align-btn')
+                    || botao.classList.contains('stroke-menu-trigger')
+                    || botao.classList.contains('color-trigger')
+                    || botao.classList.contains('picker-close')
+                    || botao.classList.contains('menu-item')
+                    || botao.closest('.format-popover')
+                    || botao.closest('.config-stepper')
+                    || botao.type === 'button' && botao.closest('.image-menu');
+                if (!temListener) {
+                    semHandler.push('sem acao: ' + (botao.id || botao.className || botao.textContent.trim()));
+                }
+            });
+            return semHandler.length ? semHandler.join(' | ') : true;
+        })() === true""")
+
+        # Toda ferramenta anunciada na faixa precisa existir no codigo.
+        check("""(() => {
+            const desconhecidas = [];
+            document.querySelectorAll('.tool-btn[data-tool]').forEach(botao => {
+                const ferramenta = botao.dataset.tool;
+                const conhecida = selectionTools.has(ferramenta)
+                    || toolSizes[ferramenta] !== undefined
+                    || strokeResizeTools.has(ferramenta)
+                    || boxResizeTools.has(ferramenta)
+                    || ['Linha', 'LinhaOrto', 'Cobrir', 'Cortar'].includes(ferramenta);
+                if (!conhecida) desconhecidas.push(ferramenta);
+            });
+            return desconhecidas.length ? desconhecidas.join(', ') : true;
+        })() === true""")
+
+        # E agora clicando de verdade, um por um.
+        js("annotations.length = 0; selectedIndex = -1; selectTool('Mover', false); ultimoErroRegistrado = ''")
+        resultado = js("""(() => {
+            // Ficam de fora os que abrem janela do Windows ou disparam captura:
+            // num teste eles travariam esperando o usuario.
+            const forcaDeFora = /appBridge|requestCapture|triggerEditionImagePicker|toggleVideoRecording|saveAs|savePng|copyFinalImage|updateShortcuts|saveUser|pasteImageFromClipboard/;
+            const clicados = [];
+            const quebrados = [];
+            document.querySelectorAll('.ribbon-content button, .ribbon-tab').forEach(botao => {
+                const acao = botao.getAttribute('onclick') || '';
+                if (forcaDeFora.test(acao)) return;
+                try {
+                    botao.click();
+                    clicados.push(botao.id || acao || botao.className);
+                } catch (erro) {
+                    quebrados.push((botao.id || acao) + ': ' + erro.message);
+                }
+            });
+            closeFormatPopover();
+            closeEditionImageMenu();
+            return JSON.stringify({clicados: clicados.length, quebrados});
+        })()""")
+        dados = json.loads(resultado)
+        assert dados["quebrados"] == [], dados["quebrados"]
+        assert dados["clicados"] >= 40, f"clicou em poucos botoes: {dados['clicados']}"
+        QTest.qWait(300)
+        application.processEvents()
+        # O tratador global de erro da interface nao pode ter registrado nada.
+        erro = js("ultimoErroRegistrado")
+        assert not erro, f"algum botao quebrou em silencio: {erro}"
+        # E o programa continua utilizavel depois de tudo isso.
+        js("""
+            const guia = document.querySelector('.ribbon-tab[onclick*="tab-home"]');
+            switchTab('tab-home', guia);
+            annotations.length = 0;
+            selectedIndex = -1;
+            selectTool('Mover', false);
+            redraw();
+        """)
+        QTest.qWait(200)
+        check("workspaceMode === 'home' && currentTool === 'Mover' && !activeFormatPopover")
+        print(f"OK: {dados['clicados']} botoes da faixa clicados, nenhum quebrou nem ficou sem acao")
+
         # --- faixa de opcoes cabe inteira no tamanho minimo ---
         window.resize(capture.RIBBON_MIN_WIDTH, 600)
         QTest.qWait(250)

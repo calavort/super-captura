@@ -180,7 +180,13 @@ def main():
         assert "ERROR" in conteudo, conteudo[-500:]
         wait_until(lambda: bool(javascript("ultimoErroRegistrado")), timeout=8)
         # E o usuario fica sabendo, em vez de olhar para uma tela travada.
+        # O aviso aponta o arquivo de verdade: com a pasta do programa somente
+        # leitura o registro cai noutro lugar, e "na pasta do programa" mandaria
+        # o usuario procurar onde nao esta.
         wait_until(lambda: "diagnostico.log" in javascript("byId('status-text').textContent"), timeout=8)
+        wait_until(lambda: bool(javascript("caminhoDoDiagnostico")), timeout=8)
+        assert javascript("caminhoDoDiagnostico") == str(registro), javascript("caminhoDoDiagnostico")
+        assert str(registro) in javascript("byId('status-text').textContent")
         # A pilha e o que diz em que linha quebrou; ela so vem pela ponte.
         javascript("ultimoErroRegistrado = ''")
         javascript("reportInterfaceError('falha de teste', 'nova-interface.js:10:5',"

@@ -157,6 +157,10 @@ function setStatus(message) {
 // diagnóstico com a pilha inteira, e a barra de estado diz onde ele está.
 let ultimoErroRegistrado = "";
 let erroAvisadoNaTela = false;
+// Onde o diagnostico esta sendo gravado de verdade. Com a pasta do programa
+// somente leitura ele cai no %LOCALAPPDATA%, e mandar o usuario procurar "na
+// pasta do programa" seria mandar para o lugar errado.
+let caminhoDoDiagnostico = "";
 
 function reportInterfaceError(mensagem, origem = "", pilha = "") {
     const texto = String(mensagem || "erro sem mensagem");
@@ -174,8 +178,8 @@ function reportInterfaceError(mensagem, origem = "", pilha = "") {
     }
     if (!erroAvisadoNaTela) {
         erroAvisadoNaTela = true;
-        setStatus("Ocorreu um erro interno. O detalhe foi gravado em diagnostico.log,"
-            + " na pasta do programa.");
+        setStatus("Ocorreu um erro interno. O detalhe foi gravado em "
+            + (caminhoDoDiagnostico || "diagnostico.log, na pasta do programa") + ".");
     }
 }
 
@@ -286,6 +290,8 @@ function initializeBridge() {
         // O programa chama loadImageData, setStatus, applySettings,
         // updateVideoState e updateMaximizeIcon diretamente.
         pyBridge.requestSettings();
+        // Guardado uma vez, para a mensagem de erro apontar o arquivo certo.
+        pyBridge.diagnosticoCaminho(caminho => { caminhoDoDiagnostico = caminho || ""; });
     });
 }
 

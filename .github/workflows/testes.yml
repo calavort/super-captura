@@ -44,3 +44,6 @@ jobs:
 
       - name: Diagnostico
         run: python tests/test_diagnostico.py
+
+      - name: Ponte interface-programa
+        run: python tests/test_ponte.py
