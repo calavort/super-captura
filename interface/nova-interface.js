@@ -5313,6 +5313,18 @@ function resetZoom() {
     fitToWorkspace();
 }
 
+// Tamanho real: um pixel da imagem em um pixel da tela. E o unico zoom em que a
+// captura aparece exatamente como foi capturada - em qualquer outro a tela
+// precisa reduzir ou ampliar, e ai ela perde ou inventa detalhe. Com a folha
+// maior que a janela, as barras de rolagem alcancam o resto.
+function zoomToActualSize() {
+    if (!ensureImage()) return;
+    finishActiveCommand(true);
+    zoomLevel = 1;
+    applyZoom();
+    setStatus("Tamanho real (100%): a imagem está pixel a pixel.");
+}
+
 function fitToWorkspace() {
     if (workspaceMode === "edition") ensureEditionCanvas();
     else if (!bgImage) return;

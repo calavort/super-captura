@@ -1665,6 +1665,26 @@ def main():
         })()""")
         print("OK: alcas e tolerancias medidas em pixels de tela")
 
+        # --- 1:1 mostra a captura pixel a pixel ---
+        check("""(() => {
+            const antes = zoomLevel;
+            zoomToActualSize();
+            if (Math.abs(zoomLevel - 1) > 1e-6) return 'nao foi para 100%: ' + zoomLevel;
+            // Em tamanho real o buffer e a imagem, e o elemento na tela tem a
+            // mesma largura: nenhuma reamostragem entre a captura e a tela.
+            const nativo = bgImage.naturalWidth || bgImage.width;
+            if (Math.abs(canvas.width - nativo) > 2) {
+                return 'buffer ' + canvas.width + ' para imagem de ' + nativo;
+            }
+            if (Math.abs(canvas.clientWidth - nativo) > 2) {
+                return 'na tela com ' + canvas.clientWidth + ' para imagem de ' + nativo;
+            }
+            zoomLevel = antes;
+            applyZoom();
+            return true;
+        })() === true""")
+        print("OK: 1:1 poe a captura pixel a pixel, sem reamostragem nenhuma")
+
         # --- as guias encostam na barra de titulo ---
         check("""(() => {
             // Os 4px de folga acima das guias apareciam como uma faixa cinza
