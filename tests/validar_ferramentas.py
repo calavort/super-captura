@@ -59,7 +59,12 @@ def main():
         return results[0]
 
     def check(source):
-        assert js(source), source
+        # Quando o teste devolve um motivo em vez de false, ele aparece junto:
+        # "nao girou" diz muito mais do que a expressao inteira repetida.
+        if js(source):
+            return
+        motivo = js(source.replace(" === true", "")) if " === true" in source else ""
+        raise AssertionError(f"{source}{chr(10)}---> motivo: {motivo!r}")
 
     try:
         wait(lambda: js("typeof pyBridge !== 'undefined' && Boolean(pyBridge)"))
@@ -1023,20 +1028,26 @@ def main():
             try {
                 workspaceMode = 'edition';
                 editionItems = [{x: 200, y: 200, w: 400, h: 300, image: imagemDeTeste}];
+                const itensDoMenu = () => [...document.querySelectorAll('.image-menu button')]
+                    .map(b => b.textContent.trim());
                 showEditionImageMenu(0, 120, 120);
-                const aberto = document.querySelector('.image-menu');
-                if (!aberto) return false;
-                const rotulos = [...aberto.querySelectorAll('button')].map(b => b.textContent.trim());
+                if (!document.querySelector('.image-menu')) return false;
+                const semCorte = itensDoMenu();
                 // Sem corte ainda, "Restaurar" nao faz sentido e nao aparece.
-                if (rotulos.length !== 2) return false;
-                if (!rotulos[0].includes('Cortar imagem')) return false;
+                if (semCorte.some(t => t.includes('Restaurar'))) return false;
+                if (!semCorte.some(t => t.includes('Cortar imagem'))) return false;
+                if (!semCorte.some(t => t.includes('Transparência'))) return false;
+                if (!semCorte.some(t => t.includes('Rotacionar'))) return false;
+                if (!semCorte.some(t => t.includes('Remover imagem'))) return false;
                 editionItems[0].crop = {x: 0, y: 0, w: 0.5, h: 1};
                 showEditionImageMenu(0, 120, 120);
-                const comCorte = [...document.querySelectorAll('.image-menu button')]
-                    .map(b => b.textContent.trim());
+                const comCorte = itensDoMenu();
+                // Um menu por vez: abrir o segundo fecha o primeiro.
+                if (document.querySelectorAll('.image-menu').length !== 1) return false;
+                if (comCorte.length !== semCorte.length + 1) return false;
+                if (!comCorte.some(t => t.includes('Restaurar'))) return false;
                 closeEditionImageMenu();
-                return comCorte.length === 3 && comCorte[1].includes('Restaurar')
-                    && !document.querySelector('.image-menu');
+                return !document.querySelector('.image-menu');
             } finally {
                 workspaceMode = modoAntes;
                 editionItems = itensAntes;
@@ -1133,6 +1144,211 @@ def main():
         QTest.qWait(200)
         print("OK: buffer cobre a resolucao da imagem, com teto de memoria e sem reducao dupla")
 
+        # --- transparencia e giro ---
+        js("annotations.length = 0; selectedIndex = -1; clearStroke(); selectTool('Mover', false); fitToWorkspace()")
+        QTest.qWait(200)
+        check("""(() => {
+            // Transparencia: a tinta some proporcionalmente, e o valor e preso
+            // antes do zero - marcacao invisivel nao da para selecionar de volta.
+            const contar = shape => {
+                const c = surface();
+                drawShape(c, shape);
+                const d = c.getImageData(0, 0, 400, 400).data;
+                let soma = 0;
+                for (let i = 3; i < d.length; i += 4) soma += d[i];
+                return soma;
+            };
+            const base = {type: 'Retangulo', x: 40, y: 40, w: 300, h: 200, color: '#000', thick: 10};
+            const cheio = contar(base);
+            const meio = contar({...base, opacity: 0.5});
+            const quase = contar({...base, opacity: 0});
+            if (!(cheio > 0)) return 'nao desenhou';
+            if (Math.abs(meio / cheio - 0.5) > 0.05) return 'meia tinta: ' + (meio / cheio);
+            if (!(quase > 0 && quase < cheio * 0.15)) return 'piso: ' + (quase / cheio);
+            if (shapeOpacity({opacity: 0}) < 0.05) return 'piso abaixo do minimo';
+            return true;
+        })() === true""")
+        check("""(() => {
+            // Giro: o desenho gira em torno do centro, e o centro fica onde esta.
+            const base = {type: 'Retangulo', x: 100, y: 150, w: 200, h: 60, color: '#000', thick: 6};
+            const caixaDe = shape => {
+                const c = surface();
+                drawShape(c, shape);
+                const d = c.getImageData(0, 0, 400, 400).data;
+                let x0 = 1e9, y0 = 1e9, x1 = -1, y1 = -1;
+                for (let y = 0; y < 400; y++) for (let x = 0; x < 400; x++) {
+                    if (d[(y*400 + x)*4 + 3] > 40) {
+                        x0 = Math.min(x0, x); x1 = Math.max(x1, x);
+                        y0 = Math.min(y0, y); y1 = Math.max(y1, y);
+                    }
+                }
+                return {x: x0, y: y0, w: x1 - x0, h: y1 - y0};
+            };
+            const reto = caixaDe(base);
+            const girado = caixaDe({...base, angle: 90});
+            // Em pe, a caixa desenhada troca de lados.
+            if (Math.abs(girado.w - reto.h) > 3 || Math.abs(girado.h - reto.w) > 3) {
+                return 'nao trocou de lados: ' + JSON.stringify([reto, girado]);
+            }
+            // E continua centrada no mesmo ponto.
+            const centroReto = [reto.x + reto.w/2, reto.y + reto.h/2];
+            const centroGirado = [girado.x + girado.w/2, girado.y + girado.h/2];
+            if (Math.abs(centroReto[0] - centroGirado[0]) > 2) return 'centro andou em x';
+            if (Math.abs(centroReto[1] - centroGirado[1]) > 2) return 'centro andou em y';
+            // A caixa no mundo acompanha o giro; a da marcacao em si, nao.
+            const mundo = rotatedBounds({...base, angle: 90});
+            if (Math.abs(mundo.w - 60) > 1 || Math.abs(mundo.h - 200) > 1) {
+                return 'rotatedBounds: ' + JSON.stringify(mundo);
+            }
+            if (Math.abs(annotationBounds({...base, angle: 90}).w - 200) > 1) return 'bounds locais mudaram';
+            return true;
+        })() === true""")
+        check("""(() => {
+            // O clique segue o desenho: num retangulo em pe, o ponto que agora e
+            // dele responde, e o que deixou de ser, nao.
+            // O retangulo e so contorno: os pontos ficam EM CIMA do traco.
+            // Deitado ele vai de x 100 a 300, y 180 a 220, centrado em (200,200);
+            // em pe, de x 180 a 220, y 100 a 300.
+            const shape = {type: 'Retangulo', x: 100, y: 180, w: 200, h: 40, color: '#000', thick: 4};
+            const noTracoDeitado = {x: 300, y: 200};
+            const noTracoEmPe = {x: 200, y: 300};
+            if (!shapeHitsPoint(shape, noTracoDeitado.x, noTracoDeitado.y)) return 'deitado nao pegou';
+            if (shapeHitsPoint(shape, noTracoEmPe.x, noTracoEmPe.y)) return 'deitado pegou onde nao devia';
+            const emPe = {...shape, angle: 90};
+            if (!shapeHitsPoint(emPe, noTracoEmPe.x, noTracoEmPe.y)) return 'em pe nao pegou';
+            if (shapeHitsPoint(emPe, noTracoDeitado.x, noTracoDeitado.y)) return 'em pe pegou onde nao devia';
+            return true;
+        })() === true""")
+        check("""(() => {
+            // Aplicar pelo menu: com marcacao selecionada mexe nela; sem
+            // selecao, fica guardado para a proxima.
+            annotations.length = 0;
+            annotations.push({type: 'Retangulo', x: 100, y: 100, w: 120, h: 80, color: '#000', thick: 4});
+            selectedIndex = 0;
+            historyStack.length = 0;
+            if (!applyOpacity(0.4)) return 'nao aplicou na selecao';
+            if (Math.abs(annotations[0].opacity - 0.4) > 1e-6) return 'opacidade';
+            if (!applyAngle(90)) return 'nao girou a selecao';
+            if (annotations[0].angle !== 90) return 'angulo: ' + annotations[0].angle;
+            // Relativo soma ao que ja esta.
+            applyAngle(90, true);
+            if (annotations[0].angle !== 180) return 'relativo: ' + annotations[0].angle;
+            applyAngle(-360, true);
+            if (annotations[0].angle !== 180) return 'volta inteira mudou o angulo';
+            if (historyStack.length !== 4) return 'desfazer: ' + historyStack.length;
+            // Sem selecao os valores ficam guardados e nascem na proxima.
+            selectedIndex = -1;
+            applyOpacity(0.6);
+            applyAngle(45);
+            const opcoes = getOptions();
+            return Math.abs(opcoes.opacity - 0.6) < 1e-6 && opcoes.angle === 45;
+        })() === true""")
+        check("""(() => {
+            // As duas ferramentas selecionam, como o Mover, e trocar entre elas
+            // nao perde o que esta selecionado.
+            annotations.length = 0;
+            annotations.push({type: 'Retangulo', x: 100, y: 100, w: 120, h: 80, color: '#000', thick: 4});
+            selectTool('Mover', false);
+            selectedIndex = 0;
+            const botao = t => document.querySelector(
+                ".ribbon-content.active .tool-btn[data-tool='" + t + "']");
+            botao('Transparencia').click();
+            if (currentTool !== 'Transparencia') return 'nao trocou de ferramenta';
+            if (selectedIndex !== 0) return 'perdeu a selecao ao ir para a Transparencia';
+            botao('Rotacionar').click();
+            if (currentTool !== 'Rotacionar' || selectedIndex !== 0) return 'perdeu ao ir para o Rotacionar';
+            // Ir para uma ferramenta de desenho limpa, como sempre foi.
+            botao('Retangulo').click();
+            if (selectedIndex !== -1) return 'o Retangulo manteve a selecao';
+            selectTool('Mover', false);
+            annotations.length = 0;
+            return true;
+        })() === true""")
+        # O menu flutuante das duas, com a barra e os botoes de um quarto de volta.
+        check("""(() => {
+            annotations.length = 0;
+            annotations.push({type: 'Retangulo', x: 100, y: 100, w: 120, h: 80, color: '#000', thick: 4});
+            selectTool('Mover', false);
+            selectedIndex = 0;
+            abrirMenuDaFerramenta('Transparencia');
+            const popover = byId('tool-config-popover');
+            if (popover.hidden) return 'menu da transparencia nao abriu';
+            if (selectedIndex !== 0) return 'abrir o menu perdeu a selecao';
+            const barra = popover.querySelector('.config-range');
+            if (!barra) return 'sem barra';
+            barra.value = 60;
+            barra.dispatchEvent(new Event('input'));
+            if (Math.abs(annotations[0].opacity - 0.4) > 1e-6) return 'a barra nao aplicou';
+
+            abrirMenuDaFerramenta('Rotacionar');
+            const direita = popover.querySelector("[data-girar='90']");
+            if (!direita) return 'sem o botao de um quarto de volta';
+            direita.click();
+            if (annotations[0].angle !== 90) return 'quarto de volta: ' + annotations[0].angle;
+            direita.click();
+            if (annotations[0].angle !== 180) return 'segundo quarto: ' + annotations[0].angle;
+            const campo = popover.querySelector('.config-angulo');
+            campo.value = 30;
+            campo.dispatchEvent(new Event('input'));
+            if (annotations[0].angle !== 30) return 'campo de angulo: ' + annotations[0].angle;
+            closeFormatPopover();
+            annotations.length = 0;
+            selectedIndex = -1;
+            return true;
+        })() === true""")
+        js("annotations.length = 0; selectedIndex = -1; selectTool('Mover', false); redraw()")
+        print("OK: transparencia e giro no desenho, no clique, no menu e na selecao")
+
+        # --- a imagem da Edicao gira e fica transparente do mesmo jeito ---
+        check("""(() => {
+            const modoAntes = workspaceMode, itensAntes = editionItems;
+            const larguraAntes = docWidth, alturaAntes = docHeight;
+            try {
+                workspaceMode = 'edition';
+                docWidth = 1600; docHeight = 1000;
+                editionItems = [{x: 200, y: 300, w: 400, h: 200, image: imagemDeTeste}];
+                const item = editionItems[0];
+                selectedEditionItemIndex = 0;
+                selectedIndex = -1;
+                // O menu enxerga a imagem como alvo.
+                if (selectedElement() !== item) return 'alvo errado';
+                applyAngle(90);
+                if (item.angle !== 90) return 'nao girou';
+                // Girada, ela responde onde aparece: a caixa no mundo fica em pe.
+                const caixa = rotatedBounds(itemAsShape(item));
+                if (Math.abs(caixa.w - 200) > 1 || Math.abs(caixa.h - 400) > 1) {
+                    return 'caixa girada: ' + JSON.stringify(caixa);
+                }
+                // Um ponto que so pertence a ela depois de girada.
+                const centro = {x: item.x + item.w / 2, y: item.y + item.h / 2};
+                if (findEditionItemAt(centro.x, centro.y + 150).index !== 0) return 'nao pegou em pe';
+                if (findEditionItemAt(centro.x + 150, centro.y).index === 0) return 'pegou onde nao devia';
+                applyOpacity(0.5);
+                return Math.abs(item.opacity - 0.5) < 1e-6;
+            } finally {
+                workspaceMode = modoAntes;
+                editionItems = itensAntes;
+                selectedEditionItemIndex = -1;
+                docWidth = larguraAntes; docHeight = alturaAntes;
+            }
+        })() === true""")
+        print("OK: imagem da Edicao gira, responde onde aparece e aceita transparencia")
+
+        # --- menu do botao direito na marcacao ---
+        check("""(() => {
+            annotations.length = 0;
+            annotations.push({type: 'Retangulo', x: 100, y: 100, w: 120, h: 80, color: '#000', thick: 4});
+            showAnnotationMenu(0, 150, 150);
+            const itens = [...document.querySelectorAll('.image-menu button')].map(b => b.textContent.trim());
+            closeEditionImageMenu();
+            annotations.length = 0;
+            return itens.length === 3
+                && itens[0].includes('Transparência')
+                && itens[1].includes('Rotacionar')
+                && itens[2].includes('Remover marcação');
+        })()""")
+        print("OK: botao direito na marcacao abre Transparencia, Rotacionar e Remover")
+
         # --- alcas mantem o tamanho aparente com o zoom ---
         check("""(() => {
             const antes = screenUnits(9);
@@ -1187,7 +1403,22 @@ def main():
             return faltando.join('; ');
         })()""")
         assert sobra == "", f"faixa com rolagem horizontal no tamanho minimo: {sobra}"
-        print(f"OK: nenhuma guia precisa de rolagem horizontal em {capture.RIBBON_MIN_WIDTH}px")
+        # E nem vertical: a grade das ferramentas cresce em linhas, entao um
+        # botao novo empurra para baixo em vez de para o lado.
+        alto = js("""(() => {
+            const faltando = [];
+            document.querySelectorAll('.ribbon-content').forEach(element => {
+                const ativa = element.classList.contains('active');
+                element.classList.add('active');
+                if (element.scrollHeight > element.clientHeight + 1) {
+                    faltando.push(element.id + ' precisa de ' + element.scrollHeight + 'px de altura');
+                }
+                if (!ativa) element.classList.remove('active');
+            });
+            return faltando.join('; ');
+        })()""")
+        assert alto == "", f"faixa cortada na altura: {alto}"
+        print(f"OK: nenhuma guia precisa de rolagem em {capture.RIBBON_MIN_WIDTH}px, nem na largura nem na altura")
 
         js("annotations.length = 0; selectedIndex = -1; clearStroke(); redraw()")
         print("VALIDACAO DAS FERRAMENTAS CONCLUIDA")

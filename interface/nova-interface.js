@@ -41,6 +41,10 @@ let zoomLevel = 1;
 let activeTextEditor = null;
 let orthogonalPath = null;
 const labelTools = new Set(["CotaLivre", "CotaAngulo", "Chamada"]);
+// Transparencia e Rotacionar nao desenham nada: elas selecionam, como o Mover,
+// e o menu delas edita o que estiver selecionado. Por isso todo caminho que
+// pergunta "e o Mover?" passa a perguntar por este conjunto.
+const selectionTools = new Set(["Mover", "Transparencia", "Rotacionar"]);
 // Alinhar só faz sentido onde o texto vira várias linhas: a caixa de Texto e a
 // chamada. No balão, no triângulo e nas cotas o texto é um valor só, já centrado
 // no lugar dele — por isso os botões apagam nessas ferramentas.
@@ -479,15 +483,33 @@ function selectTool(toolName, announce = true) {
     else byId("cfg-espessura").value = Math.min(20, Number(byId("cfg-espessura").value) || 4);
     if (toolSizes[toolName] !== undefined) byId("cfg-fonte").value = toolSizes[toolName];
     syncEditionFormatControlsFromMain();
-    canvas.style.cursor = currentTool === "Mover" ? "default" : "crosshair";
+    canvas.style.cursor = selectionTools.has(currentTool) ? "default" : "crosshair";
     if (bgImage || workspaceMode === "edition") redraw();
     if (announce) setStatus(`${button?.title || currentTool} selecionado.`);
 }
 
+// Sair do Mover para a Transparencia (ou o Rotacionar) e para editar o que
+// esta selecionado - e selectTool limpa a selecao. Entre ferramentas que so
+// selecionam, ela e devolvida.
+function manterSelecaoAoTrocar(tool) {
+    const marcacao = selectedIndex;
+    const imagem = selectedEditionItemIndex;
+    finishActiveCommand(true);
+    selectTool(tool, false);
+    selectedIndex = marcacao;
+    selectedEditionItemIndex = imagem;
+    redraw();
+}
+
 document.querySelectorAll(".tool-btn").forEach(button => {
+    const tool = button.dataset.tool;
     button.addEventListener("click", () => {
-        if (button.dataset.tool !== currentTool) finishActiveCommand(true);
-        selectTool(button.dataset.tool);
+        if (selectionTools.has(tool) && selectionTools.has(currentTool)) {
+            manterSelecaoAoTrocar(tool);
+            return;
+        }
+        if (tool !== currentTool) finishActiveCommand(true);
+        selectTool(tool);
     });
 });
 
@@ -509,6 +531,11 @@ function syncFormatControlsFromSelection(shape) {
     // Só as marcações que usam alinhamento mandam nos botões: selecionar um
     // círculo não pode zerar a escolha feita para o próximo texto.
     if (alignAwareTools.has(shape.type)) setTextAlign(shape.align || "left", false);
+    // Com o menu de transparencia ou de giro aberto, selecionar outra marcacao
+    // tem de trocar o que os campos mostram.
+    if (activeFormatPopover && activeFormatPopover.id === "tool-config-popover" && openToolConfig) {
+        renderToolConfigMenu(activeFormatPopover, openToolConfig);
+    }
     syncEditionFormatControlsFromMain();
 }
 
@@ -874,11 +901,14 @@ function clearEdition() {
 function findEditionItemAt(x, y) {
     for (let index = editionItems.length - 1; index >= 0; index--) {
         const item = editionItems[index];
+        // Girada, a imagem e testada no sistema dela - igual as marcacoes.
+        const ponto = toShapeSpace(itemAsShape(item), x, y);
         const handle = editionImageHandle(item);
-        if (Math.abs(x - handle.x) <= 14 && Math.abs(y - handle.y) <= 14) {
+        if (Math.abs(ponto.x - handle.x) <= 14 && Math.abs(ponto.y - handle.y) <= 14) {
             return {index, handle: "resize"};
         }
-        if (x >= item.x && x <= item.x + item.w && y >= item.y && y <= item.y + item.h) {
+        if (ponto.x >= item.x && ponto.x <= item.x + item.w
+            && ponto.y >= item.y && ponto.y <= item.y + item.h) {
             return {index, handle: "move"};
         }
     }
@@ -1138,7 +1168,17 @@ function drawEditionItem(context, item, destino = null) {
     if (!source) return;
     const caixa = destino || item;
     const {sx, sy, sw, sh} = cropSourceRect(item, source);
+    context.save();
+    applyShapeTransform(context, itemAsShape(item));
+    context.globalAlpha = shapeOpacity(item);
     context.drawImage(source, sx, sy, sw, sh, caixa.x, caixa.y, caixa.w, caixa.h);
+    context.restore();
+}
+
+// A imagem da Edicao usa o mesmo giro das marcacoes; o que ela nao tem e o
+// annotationBounds, entao o centro vem da propria caixa dela.
+function itemAsShape(item) {
+    return {angle: item.angle, x: item.x, y: item.y, w: item.w, h: item.h, type: "__imagem"};
 }
 
 function buildEditionProxy(item, width, height) {
@@ -1518,6 +1558,64 @@ function applyCloudFreeMode(livre) {
 // ---------------------------------------------------------------------------
 
 // O que cada menu mostra. "fill" e "text" só aparecem em quem tem essas opções.
+// Transparencia e giro valem para o que estiver selecionado - marcacao ou
+// imagem da guia Edicao. Sem selecao, o valor fica guardado e vale para a
+// proxima marcacao desenhada, como cor e espessura ja fazem.
+function selectedElement() {
+    if (workspaceMode === "edition" && selectedEditionItemIndex >= 0) {
+        return editionItems[selectedEditionItemIndex] || null;
+    }
+    return selectedIndex >= 0 ? annotations[selectedIndex] || null : null;
+}
+
+let pendingOpacity = 1;
+let pendingAngle = 0;
+
+function currentOpacity() {
+    const alvo = selectedElement();
+    return alvo ? shapeOpacity(alvo) : pendingOpacity;
+}
+
+function currentAngle() {
+    const alvo = selectedElement();
+    return alvo ? shapeAngle(alvo) : pendingAngle;
+}
+
+function applyOpacity(valor) {
+    const fracao = Math.max(0.05, Math.min(1, Number(valor) || 0));
+    const alvo = selectedElement();
+    if (!alvo) {
+        pendingOpacity = fracao;
+        setStatus(`Transparência de ${Math.round((1 - fracao) * 100)}% para a próxima marcação.`);
+        return false;
+    }
+    pushHistory();
+    alvo.opacity = fracao;
+    redraw();
+    scheduleClipboardSync();
+    setStatus(`Transparência: ${Math.round((1 - fracao) * 100)}%.`);
+    return true;
+}
+
+function applyAngle(graus, relativo = false) {
+    const alvo = selectedElement();
+    const base = relativo ? currentAngle() : 0;
+    const valor = ((Math.round(base + Number(graus) || 0) % 360) + 360) % 360;
+    if (!alvo) {
+        pendingAngle = valor;
+        setStatus(`Giro de ${valor}° para a próxima marcação.`);
+        return false;
+    }
+    pushHistory();
+    alvo.angle = valor;
+    // Girada, a marcacao pode passar da folha: ela volta inteira para dentro.
+    if (alvo.type) keepInsideDocument(alvo);
+    redraw();
+    scheduleClipboardSync();
+    setStatus(`Giro: ${valor}°.`);
+    return true;
+}
+
 const toolConfigMenus = {
     Seta: {title: "Seta", size: true},
     Chamada: {title: "Linha de chamada", size: true},
@@ -1527,7 +1625,9 @@ const toolConfigMenus = {
     Balao: {title: "Balão numerado", size: true, fill: "balao", text: "Balao",
             check: {id: "cfg-balao-line", rotulo: "Com linha de chamada"}},
     Revisao: {title: "Triângulo de revisão", size: true, fill: "revisao", text: "Revisao"},
-    Nuvem: {title: "Nuvem de revisão", size: true, cloud: true}
+    Nuvem: {title: "Nuvem de revisão", size: true, cloud: true},
+    Transparencia: {title: "Transparência", opacity: true},
+    Rotacionar: {title: "Rotacionar", rotation: true}
 };
 
 // Cada ferramenta tem a sua faixa de valores; a nuvem é a única diferente.
@@ -1549,6 +1649,7 @@ function buildToolConfigMenus() {
             wrapper.append(toolButton);
             const trigger = document.createElement("button");
             trigger.className = "stroke-menu-trigger";
+            trigger.dataset.tool = tool;
             trigger.innerHTML = CARET_SVG;
             trigger.title = "Opções: " + toolConfigMenus[tool].title;
             trigger.setAttribute("aria-label", trigger.title);
@@ -1558,7 +1659,14 @@ function buildToolConfigMenus() {
                 if (activeFormatPopover === popover && formatPopoverAnchor === trigger) return closeFormatPopover();
                 // Abrir o menu já escolhe a ferramenta, a não ser que a marcação
                 // selecionada seja dela — aí o menu edita o que está selecionado.
-                if (annotations[selectedIndex]?.type !== tool) { finishActiveCommand(true); selectTool(tool); }
+                // Transparencia e Rotacionar editam o que ja esta selecionado:
+                // trocar de ferramenta aqui apagaria justamente o alvo.
+                if (selectionTools.has(tool)) {
+                    manterSelecaoAoTrocar(tool);
+                } else if (annotations[selectedIndex]?.type !== tool) {
+                    finishActiveCommand(true);
+                    selectTool(tool);
+                }
                 openToolConfig = tool;
                 renderToolConfigMenu(popover, tool);
                 openFormatPopover(popover, trigger);
@@ -1643,6 +1751,37 @@ function renderToolConfigMenu(popover, tool) {
             + '<input type="checkbox" class="config-extra"' + (marcado ? " checked" : "") + ">"
             + "<span>" + config.check.rotulo + "</span></label>";
     }
+    if (config.opacity) {
+        const porcento = Math.round((1 - currentOpacity()) * 100);
+        html += '<span class="picker-label">Transparência</span>'
+            + '<div class="config-size-row">'
+            + '<input class="config-range" type="range" min="0" max="95" step="5" value="' + porcento
+            + '" aria-label="Transparência em porcento">'
+            + '<span class="config-hint config-porcento">' + porcento + '%</span></div>'
+            + '<div class="config-hint" style="margin-top:8px">'
+            + (selectedElement() ? "Vale para o que está selecionado."
+                                 : "Sem seleção, vale para a próxima marcação.") + "</div>";
+    }
+    if (config.rotation) {
+        const graus = Math.round(currentAngle());
+        html += '<span class="picker-label">Ângulo</span>'
+            + '<div class="config-size-row">'
+            + '<input class="config-size config-angulo" type="number" min="0" max="359" step="1" value="'
+            + graus + '" aria-label="Ângulo em graus">'
+            + '<span class="config-stepper">'
+            + '<button type="button" data-girar="1" tabindex="-1" aria-label="Mais um grau">&#9650;</button>'
+            + '<button type="button" data-girar="-1" tabindex="-1" aria-label="Menos um grau">&#9660;</button>'
+            + '</span><span class="config-hint">0 a 359</span></div>'
+            + '<span class="picker-label">Um quarto de volta</span>'
+            + '<div class="option-choices" role="group" aria-label="Girar 90 graus">'
+            + '<button class="option-choice" data-girar="-90">'
+            + '<span class="material-symbols-outlined">rotate_left</span><span>Esquerda</span></button>'
+            + '<button class="option-choice" data-girar="90">'
+            + '<span class="material-symbols-outlined">rotate_right</span><span>Direita</span></button></div>'
+            + '<div class="config-hint" style="margin-top:8px">'
+            + (selectedElement() ? "Vale para o que está selecionado."
+                                 : "Sem seleção, vale para a próxima marcação.") + "</div>";
+    }
     if (config.text) {
         const atual = String(byId("cfg-numero").value || "1");
         html += '<span class="picker-label">Texto</span>'
@@ -1701,6 +1840,28 @@ function renderToolConfigMenu(popover, tool) {
             if (dica) dica.textContent = toolConfigNextHint(config.text, campoTexto.value || "1");
         };
     }
+    const barra = popover.querySelector(".config-range");
+    if (barra) {
+        const mostrar = () => {
+            const rotulo = popover.querySelector(".config-porcento");
+            if (rotulo) rotulo.textContent = barra.value + "%";
+        };
+        barra.oninput = () => {
+            mostrar();
+            applyOpacity(1 - Number(barra.value) / 100);
+        };
+    }
+    const campoAngulo = popover.querySelector(".config-angulo");
+    if (campoAngulo) {
+        campoAngulo.oninput = () => applyAngle(campoAngulo.value);
+    }
+    popover.querySelectorAll("[data-girar]").forEach(botao => {
+        botao.onclick = () => {
+            applyAngle(Number(botao.dataset.girar), true);
+            renderToolConfigMenu(popover, tool);
+            positionFormatPopover();
+        };
+    });
     const interruptor = popover.querySelector(".config-seq");
     if (interruptor) {
         interruptor.onchange = () => {
@@ -1793,7 +1954,9 @@ function getOptions() {
         fillBalloon: byId("cfg-balao-fill") ? byId("cfg-balao-fill").checked : true,
         lineBalloon: byId("cfg-balao-line") ? byId("cfg-balao-line").checked : false,
         fillReview: byId("cfg-revisao-fill") ? byId("cfg-revisao-fill").checked : false,
-        autoHeight: byId("cfg-texto-auto") ? byId("cfg-texto-auto").checked : true
+        autoHeight: byId("cfg-texto-auto") ? byId("cfg-texto-auto").checked : true,
+        opacity: pendingOpacity,
+        angle: pendingAngle
     };
 }
 
@@ -1824,7 +1987,7 @@ function finishActiveCommand(commit = true) {
         finalizeOrthogonalPath(commit);
         handled = true;
     }
-    if (isDrawing && currentTool !== "Mover") {
+    if (isDrawing && !selectionTools.has(currentTool)) {
         isDrawing = false;
         startPoint = null;
         clearStroke();
@@ -2191,7 +2354,7 @@ function scheduleHoverCursor(point) {
 }
 
 function updateHoverCursor(point) {
-    if (currentTool !== "Mover" || isDrawing) return;
+    if (!selectionTools.has(currentTool) || isDrawing) return;
     const hit = findAnnotationAt(point.x, point.y);
     if (hit.index >= 0) {
         if (hit.handle === "box-resize" || hit.handle === "line-resize" || hit.handle === "callout-text") {
@@ -2245,7 +2408,7 @@ function keepInsideDocument(shape) {
     // A chamada tem tratamento proprio em calloutTextRect: arrastar a seta
     // atras da caixa de texto moveria a ponta para longe do que ela aponta.
     if (shape.type === "Chamada") return shape;
-    const bounds = annotationBounds(shape);
+    const bounds = rotatedBounds(shape);
     if (!bounds) return shape;
     const dx = bounds.w <= docWidth
         ? Math.max(0, -bounds.x) - Math.max(0, bounds.x + bounds.w - docWidth) : 0;
@@ -2282,7 +2445,8 @@ canvas.addEventListener("mousedown", event => {
     const options = getOptions();
 
     if (editionCropIndex >= 0) {
-        const alca = findEditionCropHandle(point.x, point.y);
+        const girado = toShapeSpace(itemAsShape(editionItems[editionCropIndex] || {}), point.x, point.y);
+        const alca = findEditionCropHandle(girado.x, girado.y);
         if (alca) {
             interactionMode = "edition-crop";
             resizeCorner = alca;
@@ -2294,7 +2458,7 @@ canvas.addEventListener("mousedown", event => {
         return;
     }
 
-    if (currentTool === "Mover") {
+    if (selectionTools.has(currentTool)) {
         const hit = findAnnotationAt(point.x, point.y, true);
         selectedIndex = hit.index;
         if (selectedIndex >= 0) {
@@ -2412,18 +2576,19 @@ function handleDrawingPointerMove(event) {
         scheduleRedraw();
         return;
     }
-    if (currentTool === "Mover" && !isDrawing) {
+    if (selectionTools.has(currentTool) && !isDrawing) {
         scheduleHoverCursor(point);
     }
     if (!isDrawing) return;
 
     if (interactionMode === "edition-crop" && editionCropIndex >= 0) {
-        resizeEditionCrop(editionItems[editionCropIndex], resizeCorner, point);
+        const alvo = editionItems[editionCropIndex];
+        resizeEditionCrop(alvo, resizeCorner, toShapeSpace(itemAsShape(alvo), point.x, point.y));
         scheduleRedraw();
         return;
     }
 
-    if (currentTool === "Mover" && workspaceMode === "edition" && selectedEditionItemIndex >= 0) {
+    if (selectionTools.has(currentTool) && workspaceMode === "edition" && selectedEditionItemIndex >= 0) {
         const item = editionItems[selectedEditionItemIndex];
         if (interactionMode === "edition-image-resize") {
             resizeEditionItem(item, point);
@@ -2434,8 +2599,12 @@ function handleDrawingPointerMove(event) {
         return;
     }
 
-    if (currentTool === "Mover" && selectedIndex >= 0) {
+    if (selectionTools.has(currentTool) && selectedIndex >= 0) {
         const annotation = annotations[selectedIndex];
+        // Arrastar uma alca de uma marcacao girada: o ponteiro entra no sistema
+        // dela antes de qualquer conta. Mover nao precisa - deslocar o centro e
+        // igual nos dois sistemas.
+        if (interactionMode !== "move") point = toShapeSpace(annotation, point.x, point.y);
         if (interactionMode === "box-resize") {
             if (isPointShape(annotation)) {
                 resizeStrokeShape(annotation, resizeCorner, point);
@@ -2510,7 +2679,7 @@ function finishDrawing(event) {
         redraw();
         return;
     }
-    if (currentTool === "Mover") {
+    if (selectionTools.has(currentTool)) {
         if (workspaceMode === "edition" && selectedEditionItemIndex >= 0) {
             finalizeEditionItemTransform(editionItems[selectedEditionItemIndex]);
         }
@@ -2574,14 +2743,25 @@ canvas.addEventListener("contextmenu", event => {
     event.preventDefault();
     // Na guia Edição, o botão direito sobre uma imagem abre o menu dela; fora
     // disso ele continua sendo o "interromper" de sempre.
-    if (workspaceMode === "edition" && editionCropIndex < 0) {
+    if (editionCropIndex < 0 && (bgImage || workspaceMode === "edition")) {
         const ponto = getMousePos(event);
-        const alvo = findEditionItemAt(ponto.x, ponto.y);
-        if (alvo.index >= 0) {
-            selectedEditionItemIndex = alvo.index;
-            selectedIndex = -1;
+        if (workspaceMode === "edition") {
+            const imagem = findEditionItemAt(ponto.x, ponto.y);
+            if (imagem.index >= 0) {
+                selectedEditionItemIndex = imagem.index;
+                selectedIndex = -1;
+                redraw();
+                showEditionImageMenu(imagem.index, event.clientX, event.clientY);
+                return;
+            }
+        }
+        const marcacao = findAnnotationAt(ponto.x, ponto.y);
+        if (marcacao.index >= 0) {
+            selectedIndex = marcacao.index;
+            selectedEditionItemIndex = -1;
+            syncFormatControlsFromSelection(annotations[marcacao.index]);
             redraw();
-            showEditionImageMenu(alvo.index, event.clientX, event.clientY);
+            showAnnotationMenu(marcacao.index, event.clientX, event.clientY);
             return;
         }
     }
@@ -2598,20 +2778,51 @@ function closeEditionImageMenu() {
     editionMenu = null;
 }
 
+// Menu da marcacao: as duas ferramentas novas chegam tambem por aqui, que e
+// onde a mao ja esta depois de clicar na marcacao.
+function showAnnotationMenu(index, clientX, clientY) {
+    const shape = annotations[index];
+    if (!shape) return;
+    montarMenuFlutuante(clientX, clientY, [
+        {rotulo: "Transparência…", icone: "opacity", acao: () => abrirMenuDaFerramenta("Transparencia")},
+        {rotulo: "Rotacionar…", icone: "rotate_right", acao: () => abrirMenuDaFerramenta("Rotacionar")},
+        {rotulo: "Remover marcação", icone: "delete", acao: () => {
+            pushHistory();
+            annotations.splice(index, 1);
+            selectedIndex = -1;
+            redraw();
+            setStatus("Marcação removida.");
+            scheduleClipboardSync();
+        }}
+    ]);
+}
+
+// Abre o menu flutuante da ferramenta sem trocar o que esta selecionado: o
+// selectTool limparia a selecao, que e justamente o alvo da edicao.
+function abrirMenuDaFerramenta(tool) {
+    const seletor = ".stroke-menu-trigger[data-tool='" + tool + "']";
+    const gatilho = document.querySelector(".ribbon-content.active " + seletor)
+        || document.querySelector(seletor);
+    if (!gatilho) return;
+    const popover = byId("tool-config-popover");
+    if (!popover) return;
+    openToolConfig = tool;
+    renderToolConfigMenu(popover, tool);
+    openFormatPopover(popover, gatilho);
+}
+
 function showEditionImageMenu(index, clientX, clientY) {
     closeEditionImageMenu();
     const item = editionItems[index];
     if (!item) return;
-    const menu = document.createElement("section");
-    menu.className = "format-popover image-menu";
-    menu.setAttribute("role", "menu");
-    menu.setAttribute("aria-label", "Opções da imagem");
     const opcoes = [
         {rotulo: "Cortar imagem", icone: "crop", acao: () => beginEditionCrop(index)}
     ];
     if (itemIsCropped(item)) {
         opcoes.push({rotulo: "Restaurar imagem inteira", icone: "restore", acao: () => resetEditionCrop(index)});
     }
+    opcoes.push({rotulo: "Transparência…", icone: "opacity", acao: () => abrirMenuDaFerramenta("Transparencia")});
+    opcoes.push({rotulo: "Rotacionar…", icone: "rotate_right", acao: () => abrirMenuDaFerramenta("Rotacionar")});
     opcoes.push({rotulo: "Remover imagem", icone: "delete", acao: () => {
         pushHistory();
         editionItems.splice(index, 1);
@@ -2620,6 +2831,15 @@ function showEditionImageMenu(index, clientX, clientY) {
         setStatus("Imagem removida da edição.");
         scheduleClipboardSync();
     }});
+    montarMenuFlutuante(clientX, clientY, opcoes);
+}
+
+function montarMenuFlutuante(clientX, clientY, opcoes) {
+    closeEditionImageMenu();
+    const menu = document.createElement("section");
+    menu.className = "format-popover image-menu";
+    menu.setAttribute("role", "menu");
+    menu.setAttribute("aria-label", "Opções");
     opcoes.forEach(opcao => {
         const botao = document.createElement("button");
         botao.type = "button";
@@ -2954,6 +3174,7 @@ function drawEditionCropOverlay(item) {
     const quadro = itemFullFrame(item);
     const source = editionRenderSource(item);
     ctx.save();
+    applyShapeTransform(ctx, itemAsShape(item));
     // O que sai continua na tela, apagado: e assim que da para ver o que esta
     // sendo jogado fora e trazer de volta arrastando a alça para tras.
     if (source) {
@@ -2980,6 +3201,7 @@ function drawEditionCropOverlay(item) {
 function drawEditionImageSelection(item) {
     const handle = editionImageHandle(item);
     ctx.save();
+    applyShapeTransform(ctx, itemAsShape(item));
     ctx.strokeStyle = "#F2A100";
     ctx.lineWidth = 2;
     ctx.setLineDash([7, 4]);
@@ -3006,7 +3228,8 @@ function drawableAnnotation(shape, index) {
 
 function drawShape(context, shape, selected = false, temporary = false) {
     context.save();
-    context.globalAlpha = temporary ? 0.75 : 1;
+    applyShapeTransform(context, shape);
+    context.globalAlpha = (temporary ? 0.75 : 1) * shapeOpacity(shape);
     context.strokeStyle = shape.color;
     context.fillStyle = shape.color;
     context.lineWidth = shape.thick;
@@ -3051,7 +3274,7 @@ function drawShape(context, shape, selected = false, temporary = false) {
     } else if (shape.type === "Caneta" || shape.type === "MarcaTexto") {
         if (shape.points.length) {
             if (shape.type === "MarcaTexto") {
-                context.globalAlpha = temporary ? 0.3 : 0.38;
+                context.globalAlpha = (temporary ? 0.3 : 0.38) * shapeOpacity(shape);
                 context.lineWidth = shape.thick * 4;
             }
             drawSmoothStroke(context, shape.points);
@@ -3640,8 +3863,9 @@ function paintCoverSource(target, sx, sy, sw, sh, width, height) {
     if (workspaceMode === "edition") {
         editionItems.forEach(item => {
             if (!item.image) return;
-            if (item.x > sx + sw || item.x + item.w < sx) return;
-            if (item.y > sy + sh || item.y + item.h < sy) return;
+            const caixa = rotatedBounds(itemAsShape(item));
+            if (caixa.x > sx + sw || caixa.x + caixa.w < sx) return;
+            if (caixa.y > sy + sh || caixa.y + caixa.h < sy) return;
             const origem = cropSourceRect(item, item.image);
             target.drawImage(item.image, origem.sx, origem.sy, origem.sw, origem.sh,
                              item.x, item.y, item.w, item.h);
@@ -4021,12 +4245,82 @@ function annotationBounds(shape) {
     return normalizedRect(shape);
 }
 
+// --- Giro e transparencia -----------------------------------------------
+// As duas valem para qualquer marcacao e para as imagens da guia Edicao, e
+// entram por dois pontos de passagem so: o desenho (drawShape) e o teste de
+// clique (shapeHitsPoint e as alcas). Guardar o angulo em vez de girar os
+// pontos deixa a marcacao editavel como antes - o texto continua sendo texto,
+// a cota continua medindo - e desfazer o giro e so zerar o campo.
+function shapeAngle(shape) {
+    const graus = Number(shape && shape.angle) || 0;
+    return ((graus % 360) + 360) % 360;
+}
+
+function shapeOpacity(shape) {
+    const valor = Number(shape && shape.opacity);
+    // Nunca chega a zero: uma marcacao invisivel some da tela e o usuario perde
+    // o jeito de selecionar de volta.
+    return Number.isFinite(valor) ? Math.max(0.05, Math.min(1, valor)) : 1;
+}
+
+function rotatePoint(x, y, centro, graus) {
+    if (!graus) return {x, y};
+    const rad = graus * Math.PI / 180;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    const dx = x - centro.x;
+    const dy = y - centro.y;
+    return {x: centro.x + dx * cos - dy * sin, y: centro.y + dx * sin + dy * cos};
+}
+
+function shapeCenter(shape) {
+    const bounds = shape.type === "__imagem" ? shape : annotationBounds(shape);
+    return {x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2};
+}
+
+// Leva um ponto do mundo para o sistema da marcacao girada. E o que faz o
+// clique, as alcas e o arrasto continuarem valendo depois de girar - sem isso
+// a marcacao apareceria num lugar e responderia noutro.
+function toShapeSpace(shape, x, y) {
+    const graus = shapeAngle(shape);
+    return graus ? rotatePoint(x, y, shapeCenter(shape), -graus) : {x, y};
+}
+
+function applyShapeTransform(context, shape) {
+    const graus = shapeAngle(shape);
+    if (!graus) return;
+    const centro = shapeCenter(shape);
+    context.translate(centro.x, centro.y);
+    context.rotate(graus * Math.PI / 180);
+    context.translate(-centro.x, -centro.y);
+}
+
+// Caixa no mundo depois de girada: e ela que diz se a marcacao passou da folha.
+function rotatedBounds(shape) {
+    const bounds = annotationBounds(shape);
+    const graus = shapeAngle(shape);
+    if (!graus) return bounds;
+    const centro = {x: bounds.x + bounds.w / 2, y: bounds.y + bounds.h / 2};
+    const cantos = [
+        [bounds.x, bounds.y], [bounds.x + bounds.w, bounds.y],
+        [bounds.x + bounds.w, bounds.y + bounds.h], [bounds.x, bounds.y + bounds.h]
+    ].map(([x, y]) => rotatePoint(x, y, centro, graus));
+    const xs = cantos.map(ponto => ponto.x);
+    const ys = cantos.map(ponto => ponto.y);
+    const x = Math.min(...xs);
+    const y = Math.min(...ys);
+    return {x, y, w: Math.max(...xs) - x, h: Math.max(...ys) - y};
+}
+
 function drawSelection(shape) {
     const bounds = annotationBounds(shape);
     // Tudo aqui é medido em pixels de tela: com o supersampling e o zoom, as
     // alças precisam manter o mesmo tamanho aparente para continuarem clicáveis.
     const inset = screenUnits(5);
     ctx.save();
+    // A moldura e as alcas giram junto: elas sao desenhadas no sistema da
+    // marcacao, que e o mesmo em que o clique e testado.
+    applyShapeTransform(ctx, shape);
     ctx.strokeStyle = "#F2A100";
     ctx.lineWidth = screenUnits(1.6);
     ctx.setLineDash([screenUnits(7), screenUnits(4)]);
@@ -4074,6 +4368,7 @@ function drawBalloonTipGrip(shape) {
 }
 
 function findBalloonTipGrip(shape, x, y) {
+    ({x, y} = toShapeSpace(shape, x, y));
     if (!shape.lineBalloon || shape.type !== "Balao") return false;
     const point = balloonTipPoint(shape);
     return Math.hypot(x - point.x, y - point.y) <= screenUnits(13);
@@ -4120,6 +4415,7 @@ function drawDimensionGrips(shape) {
 }
 
 function findDimensionGrip(shape, x, y) {
+    ({x, y} = toShapeSpace(shape, x, y));
     if (shape.type !== "CotaLivre") return -1;
     const tolerance = screenUnits(12);
     const index = dimensionGripPoints(shape).findIndex(point => Math.abs(x - point.x) <= tolerance && Math.abs(y - point.y) <= tolerance);
@@ -4287,6 +4583,7 @@ function resizeMarkerShape(shape, point) {
 }
 
 function findResizeHandle(shape, x, y) {
+    ({x, y} = toShapeSpace(shape, x, y));
     if (boxResizeTools.has(shape.type) || strokeResizeTools.has(shape.type)) {
         const tolerance = screenUnits(9);
         const found = boxHandlePoints(shape).find(point => Math.abs(x - point.x) <= tolerance && Math.abs(y - point.y) <= tolerance);
@@ -4384,6 +4681,7 @@ function shapeLabelRect(shape) {
 }
 
 function shapeHitsPoint(shape, x, y) {
+    ({x, y} = toShapeSpace(shape, x, y));
     const tolerance = hitTolerance(shape);
     const label = shapeLabelRect(shape);
     if (label && pointInRect(x, y, label, 4)) return true;
