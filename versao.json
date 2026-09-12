@@ -1,6 +1,6 @@
 {
   "app_id": "calavort.super-captura",
-  "version": "7.9.3",
+  "version": "7.9.4",
   "repository": "calavort/super-captura",
   "launcher": "app.py"
 }
