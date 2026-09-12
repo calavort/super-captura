@@ -41,3 +41,6 @@ jobs:
 
       - name: Publicacao
         run: python tests/test_publicacao.py
+
+      - name: Diagnostico
+        run: python tests/test_diagnostico.py

@@ -13,6 +13,17 @@ INSTALAÇÃO
    também limpa o cache de ícones do Windows, que é o que faz o Menu Iniciar
    insistir em mostrar uma versão antiga do ícone.
 
+QUANDO ALGO DER ERRADO
+----------------------
+O programa grava um arquivo "diagnostico.log" na propria pasta, com o rastro do
+que aconteceu antes do problema: versao, sistema, falhas internas e erros da
+interface com a pilha inteira. Sao no maximo quatro arquivos de 512 KB, que
+rodam entre si - da para anexar num e-mail. Se a pasta do programa nao aceitar
+escrita, o arquivo vai para %LOCALAPPDATA%\SuperCaptura.
+
+Ao relatar um problema, mande esse arquivo junto: e ele que diz o que houve na
+sua maquina.
+
 RECURSOS
 --------
 - Atualizacoes por GitHub Releases: verificacao ao abrir e instalacao com

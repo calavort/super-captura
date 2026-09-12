@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import app as capture
+import diagnostico
 from atualizacao import atualizador_ui
 from atualizacao.atualizador import APP_FILES, AppInstance, Release, read_version, version_tuple
 from PySide6.QtCore import Qt, QTimer
@@ -32,6 +33,12 @@ def main():
     capture.DEFAULT_IMAGE_DIR = folder / "capturas"
     capture.DEFAULT_VIDEO_DIR = folder / "videos"
     capture.MainWindow._install_printscreen_hook = lambda self: None
+    # O registro precisa apontar para a copia isolada, nao para a pasta real.
+    for tratador in list(diagnostico._logger.handlers):
+        tratador.close()
+        diagnostico._logger.removeHandler(tratador)
+    diagnostico._caminho = None
+    registro = diagnostico.configurar(folder, "teste")
     checks = []
 
     def initial_check(info):
@@ -155,6 +162,63 @@ def main():
         assert not window.updater.installing and "desenvolvimento" in window.updater.message
         print("OK: pasta de desenvolvimento protegida")
 
+        # --- erro na interface chega ao arquivo de diagnostico ---
+        assert registro and registro.exists(), "o diagnostico nao foi criado"
+        javascript("""(() => {
+            // Erro solto num callback: e assim que ele acontece de verdade, e era
+            // exatamente o caso que congelava a tela sem deixar rastro nenhum.
+            setTimeout(() => { naoExisteEstaFuncao(); }, 0);
+            return true;
+        })()""")
+        # Dois caminhos independentes: o console do Chromium (pega ate o que
+        # quebra antes do JavaScript proprio carregar) e o tratador global da
+        # pagina, que manda a pilha pela ponte.
+        wait_until(lambda: "naoExisteEstaFuncao" in registro.read_text(encoding="utf-8"), timeout=8)
+        conteudo = registro.read_text(encoding="utf-8")
+        assert "[interface]" in conteudo, conteudo[-500:]
+        assert "ERROR" in conteudo, conteudo[-500:]
+        wait_until(lambda: bool(javascript("ultimoErroRegistrado")), timeout=8)
+        # E o usuario fica sabendo, em vez de olhar para uma tela travada.
+        wait_until(lambda: "diagnostico.log" in javascript("byId('status-text').textContent"), timeout=8)
+        # A pilha e o que diz em que linha quebrou; ela so vem pela ponte.
+        javascript("ultimoErroRegistrado = ''")
+        javascript("reportInterfaceError('falha de teste', 'nova-interface.js:10:5',"
+                   " 'at desenhar (nova-interface.js:10:5)')")
+        wait_until(lambda: "at desenhar (nova-interface.js:10:5)"
+                   in registro.read_text(encoding="utf-8"), timeout=8)
+        # Repetido em sequencia entra uma vez so: o mesmo erro num laco de
+        # desenho dispararia centenas de vezes por segundo.
+        antes = registro.read_text(encoding="utf-8").count("falha de teste")
+        for _ in range(3):
+            javascript("reportInterfaceError('falha de teste', 'nova-interface.js:10:5',"
+                       " 'at desenhar (nova-interface.js:10:5)')")
+        QTest.qWait(250)
+        application.processEvents()
+        depois = registro.read_text(encoding="utf-8").count("falha de teste")
+        assert depois == antes, f"erro repetido entrou mais {depois - antes} vezes"
+        print("OK: erro da interface registrado com pilha e avisado na barra de estado")
+
+        # --- preferencia da faixa sobrevive a ida ao disco ---
+        # A ponte so grava as chaves que conhece: text_align e auto_sequence
+        # eram gravados pela interface e descartados aqui, sem ninguem notar.
+        javascript("""(() => {
+            setTextAlign('right', false);
+            autoSequence.Balao = false;
+            if (pyBridge) pyBridge.savePreferences(JSON.stringify(readPreferences()));
+            return true;
+        })()""")
+        wait_until(lambda: json.loads(capture.SETTINGS_PATH.read_text(encoding="utf-8"))
+                   .get("text_align") == "right", timeout=8)
+        gravado = json.loads(capture.SETTINGS_PATH.read_text(encoding="utf-8"))
+        assert gravado.get("auto_sequence", {}).get("Balao") is False, gravado.get("auto_sequence")
+        # E volta na abertura seguinte.
+        javascript("applySettings(%s)" % json.dumps(gravado))
+        assert javascript("currentTextAlign()") == "right"
+        assert javascript("autoSequence.Balao") is False
+        javascript("setTextAlign('left', false); autoSequence.Balao = true;"
+                   " pyBridge.savePreferences(JSON.stringify(readPreferences()))")
+        print("OK: alinhamento e sequencia automatica gravados no arquivo e restaurados")
+
         javascript("document.querySelector(\".ribbon-tab[onclick*=\" + '\"tab-config\"' + \"]\").click()")
         window.updater._status("Versao 7.1.1 disponivel.")
         wait_until(lambda: javascript("document.getElementById('tab-config').classList.contains('active')"))
@@ -180,6 +244,11 @@ def main():
         window.close()
         window.deleteLater()
         application.processEvents()
+        # O registro mantem o arquivo aberto: sem soltar, o Windows nao deixa
+        # apagar a pasta temporaria.
+        for tratador in list(diagnostico._logger.handlers):
+            tratador.close()
+            diagnostico._logger.removeHandler(tratador)
         temporary.cleanup()
 
 

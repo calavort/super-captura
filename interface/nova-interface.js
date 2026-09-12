@@ -125,6 +125,49 @@ function setStatus(message) {
     byId("status-text").textContent = message || "Pronto.";
 }
 
+// --- Erro na interface --------------------------------------------------
+// A interface roda no processo do Chromium. Uma exceção solta no meio de um
+// traçado não aparecia em lugar nenhum: a tela simplesmente parava de responder
+// e o usuário ficava sem nada para relatar. Agora o erro vai para o arquivo de
+// diagnóstico com a pilha inteira, e a barra de estado diz onde ele está.
+let ultimoErroRegistrado = "";
+let erroAvisadoNaTela = false;
+
+function reportInterfaceError(mensagem, origem = "", pilha = "") {
+    const texto = String(mensagem || "erro sem mensagem");
+    // O mesmo erro num laço de desenho dispara centenas de vezes por segundo:
+    // repetido em sequência, entra uma vez só.
+    const assinatura = `${texto}|${origem}`;
+    if (assinatura === ultimoErroRegistrado) return;
+    ultimoErroRegistrado = assinatura;
+    try {
+        if (pyBridge && typeof pyBridge.logJavaScript === "function") {
+            pyBridge.logJavaScript(JSON.stringify({mensagem: texto, origem, pilha: String(pilha || "")}));
+        }
+    } catch (falha) {
+        // Sem ponte não há para onde mandar; o console da página ainda registra.
+    }
+    if (!erroAvisadoNaTela) {
+        erroAvisadoNaTela = true;
+        setStatus("Ocorreu um erro interno. O detalhe foi gravado em diagnostico.log,"
+            + " na pasta do programa.");
+    }
+}
+
+window.addEventListener("error", event => {
+    const origem = event.filename
+        ? `${String(event.filename).split("/").pop()}:${event.lineno}:${event.colno}` : "";
+    reportInterfaceError(event.message, origem, event.error && event.error.stack);
+});
+
+// Promessa rejeitada sem catch não passa pelo "error" acima.
+window.addEventListener("unhandledrejection", event => {
+    const motivo = event.reason;
+    reportInterfaceError(
+        motivo && motivo.message ? motivo.message : String(motivo),
+        "promessa sem catch", motivo && motivo.stack);
+});
+
 function updateReleaseState(state) {
     byId("update-version").textContent = `Versao ${state.version}`;
     byId("update-status").textContent = state.message;
@@ -1671,6 +1714,69 @@ function finishActiveCommand(commit = true) {
         if (bgImage || workspaceMode === "edition") redraw();
     }
     return handled;
+}
+
+// --- Empurrao com as setas ----------------------------------------------
+// Calibragem do passo: um pixel do documento e o passo fino, que e o que se
+// quer ao encostar um balao num detalhe do desenho. So que, com o zoom bem
+// reduzido, um pixel do documento nao chega a um pixel na tela e a marcacao
+// parecia nao sair do lugar - por isso o passo nunca e menor que um pixel de
+// tela. Com Shift anda dez vezes mais, para atravessar a folha sem segurar a
+// tecla. O passo e sempre em pixels do documento: e neles que a imagem sai.
+const NUDGE_KEYS = {
+    ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1]
+};
+
+function nudgeStep(coarse) {
+    const fino = Math.max(1, screenUnits(1));
+    return coarse ? fino * 10 : fino;
+}
+
+// Uma rajada de setas vira um unico desfazer: a transacao abre na primeira e so
+// fecha quando as teclas param, do mesmo jeito que o arrasto do mouse ja fazia.
+let nudgeTimer = null;
+
+function beginNudgeBurst() {
+    if (nudgeTimer === null) beginHistoryTransaction();
+    else clearTimeout(nudgeTimer);
+    nudgeTimer = window.setTimeout(endNudgeBurst, 450);
+}
+
+function endNudgeBurst() {
+    if (nudgeTimer === null) return;
+    clearTimeout(nudgeTimer);
+    nudgeTimer = null;
+    // A folha da guia Edicao so cresce quando o empurrao termina: fazer isso a
+    // cada tecla remontaria o canvas dezenas de vezes.
+    if (workspaceMode === "edition" && selectedEditionItemIndex >= 0) {
+        finalizeEditionItemTransform(editionItems[selectedEditionItemIndex]);
+    }
+    commitHistoryTransaction();
+    scheduleClipboardSync();
+}
+
+function nudgeSelection(dx, dy) {
+    if (workspaceMode === "edition" && selectedEditionItemIndex >= 0) {
+        const item = editionItems[selectedEditionItemIndex];
+        if (!item) return false;
+        beginNudgeBurst();
+        // Sem encaixe aqui: a seta e o ajuste fino, e travar de tres em tres
+        // pixels seria justamente o contrario do que ela serve.
+        item.x += dx;
+        item.y += dy;
+        redraw();
+        setStatus(`Imagem em ${Math.round(item.x)}, ${Math.round(item.y)} px.`);
+        return true;
+    }
+    const shape = annotations[selectedIndex];
+    if (!shape) return false;
+    beginNudgeBurst();
+    shiftAnnotation(shape, dx, dy);
+    keepInsideDocument(shape);
+    redraw();
+    const bounds = annotationBounds(shape);
+    setStatus(`Marcação em ${Math.round(bounds.x)}, ${Math.round(bounds.y)} px.`);
+    return true;
 }
 
 function interruptCommand() {
@@ -4379,6 +4485,20 @@ window.addEventListener("keydown", event => {
         return;
     }
     if (["INPUT", "SELECT", "TEXTAREA"].includes(document.activeElement?.tagName)) return;
+    // Setas empurram a marcação ou a imagem selecionada. O menu de cores usa as
+    // setas para outra coisa, então com ele aberto elas continuam sendo dele.
+    if (NUDGE_KEYS[event.key] && !event.ctrlKey && !event.altKey && !activeFormatPopover) {
+        const selecionado = selectedIndex >= 0
+            || (workspaceMode === "edition" && selectedEditionItemIndex >= 0);
+        if (selecionado) {
+            const [sx, sy] = NUDGE_KEYS[event.key];
+            const passo = nudgeStep(event.shiftKey);
+            if (nudgeSelection(sx * passo, sy * passo)) {
+                event.preventDefault();
+                return;
+            }
+        }
+    }
     const key = event.key.toLowerCase();
     if (event.ctrlKey && key === "v") {
         // Elemento copiado com Ctrl+C tem prioridade sobre a imagem da área

@@ -700,6 +700,93 @@ def main():
         js("annotations.length = 0; selectedIndex = -1; selectTool('Mover', false); redraw()")
         print("OK: o comando segue vivo com o ponteiro fora do canvas e so termina ao soltar")
 
+        # --- setas empurram a figura selecionada ---
+        js("""
+            annotations.length = 0;
+            annotations.push({type: 'Retangulo', x: 300, y: 200, w: 160, h: 120,
+                              color: '#107C41', thick: 4});
+            selectedIndex = 0;
+            selectTool('Mover', false);
+            selectedIndex = 0;
+            redraw();
+        """)
+        passo = js("nudgeStep(false)")
+        passo_largo = js("nudgeStep(true)")
+        # Calibragem: nunca menor que um pixel da folha nem que um pixel de tela,
+        # e o Shift anda dez vezes mais.
+        assert passo >= 1, passo
+        assert abs(passo_largo - passo * 10) < 1e-6, (passo, passo_largo)
+        assert passo >= js("screenUnits(1)") - 1e-6, (passo, js("screenUnits(1)"))
+
+        antes = json.loads(js("JSON.stringify({x: annotations[0].x, y: annotations[0].y})"))
+        QTest.keyClick(alvo, Qt.Key.Key_Right)
+        QTest.qWait(60)
+        application.processEvents()
+        depois = json.loads(js("JSON.stringify({x: annotations[0].x, y: annotations[0].y})"))
+        assert abs(depois["x"] - antes["x"] - passo) < 1e-6, (antes, depois, passo)
+        assert abs(depois["y"] - antes["y"]) < 1e-6, (antes, depois)
+
+        QTest.keyClick(alvo, Qt.Key.Key_Down, Qt.KeyboardModifier.ShiftModifier)
+        QTest.qWait(60)
+        application.processEvents()
+        largo = json.loads(js("JSON.stringify({x: annotations[0].x, y: annotations[0].y})"))
+        assert abs(largo["y"] - depois["y"] - passo_largo) < 1e-6, (depois, largo, passo_largo)
+
+        # Uma rajada de setas vira um unico desfazer. Antes, deixa a rajada
+        # anterior fechar: teclas separadas por menos de meio segundo sao a
+        # mesma rajada, e e isso que o teste abaixo vai conferir.
+        QTest.qWait(600)
+        application.processEvents()
+        js("historyStack.length = 0; redoStack.length = 0")
+        partida = js("annotations[0].x")
+        for _ in range(6):
+            QTest.keyClick(alvo, Qt.Key.Key_Right)
+        QTest.qWait(120)
+        application.processEvents()
+        andou = js("annotations[0].x")
+        assert abs(andou - partida - passo * 6) < 1e-6, (partida, andou)
+        # A transacao so fecha quando as teclas param.
+        QTest.qWait(600)
+        application.processEvents()
+        assert js("historyStack.length") == 1, js("historyStack.length")
+        js("undoAnnotation()")
+        QTest.qWait(120)
+        assert abs(js("annotations[0].x") - partida) < 1e-6, (js("annotations[0].x"), partida)
+        print("OK: setas empurram a marcacao, Shift anda dez vezes mais e a rajada e um so desfazer")
+
+        # --- a seta tambem respeita a borda da folha ---
+        js("""
+            annotations.length = 0;
+            annotations.push({type: 'Retangulo', x: docWidth - 60, y: 40, w: 50, h: 40,
+                              color: '#107C41', thick: 4});
+            selectedIndex = 0;
+            redraw();
+        """)
+        for _ in range(12):
+            QTest.keyClick(alvo, Qt.Key.Key_Right, Qt.KeyboardModifier.ShiftModifier)
+        QTest.qWait(700)
+        application.processEvents()
+        check("""(() => {
+            const b = annotationBounds(annotations[0]);
+            return b.x + b.w <= docWidth + 1 && b.x >= -1;
+        })()""")
+
+        # --- com o editor de texto aberto a seta e do texto, nao da marcacao ---
+        js("annotations.length = 0; selectedIndex = -1; selectTool('Texto', false)")
+        QTest.mouseClick(alvo, Qt.MouseButton.LeftButton, pos=canvas_point(200, 200))
+        wait(lambda: js("Boolean(activeTextEditor)"))
+        js("annotations.push({type: 'Retangulo', x: 300, y: 300, w: 80, h: 60, color: '#000', thick: 2});"
+           " selectedIndex = annotations.length - 1")
+        alvoX = js("annotations[selectedIndex].x")
+        QTest.keyClick(alvo, Qt.Key.Key_Right)
+        QTest.qWait(80)
+        application.processEvents()
+        assert js("annotations[selectedIndex].x") == alvoX, "a seta mexeu na marcacao enquanto digitava"
+        js("finalizeTextEditor(false)")
+        QTest.qWait(120)
+        js("annotations.length = 0; selectedIndex = -1; selectTool('Mover', false); redraw()")
+        print("OK: a seta para na borda e nao rouba a digitacao do editor de texto")
+
         # --- imagens da guia Edicao encaixam umas nas outras ---
         check("""(() => {
             const modoAntes = workspaceMode, itensAntes = editionItems;
@@ -740,7 +827,20 @@ def main():
                 resizeEditionItem(movel, {x: 500 + tolerancia * 0.5, y: 0});
                 if (Math.abs(movel.x + movel.w - 500) > 0.001) return false;
 
+                // A seta empurra a imagem selecionada tambem, e sem encaixe:
+                // ela e o ajuste fino, travar de tres em tres seria o contrario.
+                movel.x = 900; movel.y = 700;
+                selectedEditionItemIndex = 1;
+                const passo = nudgeStep(false);
+                nudgeSelection(passo, 0);
+                nudgeSelection(0, -passo);
+                if (Math.abs(movel.x - (900 + passo)) > 1e-6) return false;
+                if (Math.abs(movel.y - (700 - passo)) > 1e-6) return false;
+                endNudgeBurst();
+                selectedEditionItemIndex = -1;
+
                 // Concluir o arrasto apaga as linhas de referencia.
+                moveEditionItem(movel, 800, 200);
                 finalizeEditionItemTransform(movel);
                 return editionGuides.length === 0;
             } finally {

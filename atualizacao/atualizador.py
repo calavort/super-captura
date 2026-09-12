@@ -41,7 +41,7 @@ _SEGMENT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9 ._-]*")
 # Lista desta versao: e o que o publicador empacota e o que se assume ter
 # sido instalado quando ainda nao existe registro de uma instalacao anterior.
 APP_FILES = (
-    "app.py", "versao.json", "requirements.txt", "README.txt",
+    "app.py", "diagnostico.py", "versao.json", "requirements.txt", "README.txt",
     "iniciar_super_captura.bat", "Instalar Bibliotecas.bat",
     "Adicionar ao Menu Iniciar.bat",
     "atualizacao/atualizador.py", "atualizacao/atualizador_ui.py",

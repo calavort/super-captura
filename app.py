@@ -15,6 +15,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Optional
 
+import diagnostico
 from atualizacao.atualizador import AppInstance, read_version, write_json
 
 os.environ.setdefault(
@@ -33,7 +34,7 @@ from PySide6.QtMultimedia import (
     QScreenCapture,
 )
 from PySide6.QtWebChannel import QWebChannel
-from PySide6.QtWebEngineCore import QWebEngineSettings
+from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QApplication, QFileDialog, QMainWindow, QMessageBox, QRubberBand, QWidget
 
@@ -122,6 +123,8 @@ def default_settings() -> dict:
         "bold": False,
         "italic": False,
         "underline": False,
+        "text_align": "left",
+        "auto_sequence": {"Balao": True, "Revisao": True},
         "image_folder": str(DEFAULT_IMAGE_DIR),
         "video_folder": str(DEFAULT_VIDEO_DIR),
         "last_save_dir": "",
@@ -287,8 +290,36 @@ class CaptureOverlay(QWidget):
         super().closeEvent(event)
 
 
+class SuperWebPage(QWebEnginePage):
+    """Página que leva o console da interface para o arquivo de diagnóstico.
+
+    A interface roda noutro processo, o do Chromium. Sem isto, um erro de
+    JavaScript no meio de um traçado só congelava a tela: nada aparecia para o
+    usuário nem ficava registrado em lugar nenhum.
+    """
+
+    _NIVEIS = {
+        QWebEnginePage.JavaScriptConsoleMessageLevel.ErrorMessageLevel: "erro",
+        QWebEnginePage.JavaScriptConsoleMessageLevel.WarningMessageLevel: "aviso",
+    }
+
+    def javaScriptConsoleMessage(self, level, message, line, source):
+        nivel = self._NIVEIS.get(level)
+        # Mensagens comuns de console (console.log) não interessam ao arquivo.
+        if not nivel:
+            return
+        arquivo = str(source).rsplit("/", 1)[-1] or "?"
+        diagnostico.registrar_javascript(nivel, f"{arquivo}:{line} {message}")
+
+
 class SuperWebView(QWebEngineView):
     """WebView que impede o zoom do Chromium e usa Ctrl+scroll só na imagem."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        # A página precisa ser trocada antes do canal e da URL: quem cria o
+        # QWebChannel é o chamador, e ele o registra na página que estiver aqui.
+        self.setPage(SuperWebPage(self))
 
     def wheelEvent(self, event):
         if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
@@ -374,7 +405,8 @@ class Bridge(QObject):
         if pixel_count <= DIRECT_PREVIEW_MAX_PIXELS:
             try:
                 source = self._pixmap_to_data_url(pixmap)
-            except Exception:
+            except Exception as exc:
+                diagnostico.falha("Previa da captura em memoria; seguindo por arquivo", exc)
                 source = ""
 
         if not source:
@@ -525,6 +557,7 @@ class Bridge(QObject):
             self.overlay.raise_()
             self._emit_status("Selecione a área desejada na tela.")
         except Exception as exc:
+            diagnostico.falha("Falha ao iniciar a captura de area", exc)
             self.window.show()
             self._emit_status(f"Erro ao iniciar captura: {exc}")
 
@@ -560,6 +593,7 @@ class Bridge(QObject):
                 ),
             )
         except Exception as exc:
+            diagnostico.falha("Falha ao capturar a tela inteira", exc)
             self._emit_status(f"Erro ao capturar tela: {exc}")
         finally:
             self._pending_capture = None
@@ -728,7 +762,7 @@ class Bridge(QObject):
             "delay", "auto_copy", "auto_save", "video_format", "video_fps", "video_audio",
             "color", "thickness", "font_size", "number", "balloon_fill", "balloon_line",
             "review_fill", "cloud_free", "text_autogrow", "tool_sizes",
-            "bold", "italic", "underline",
+            "bold", "italic", "underline", "text_align", "auto_sequence",
             "pen_thickness", "highlighter_thickness", "recent_colors",
         }
         if isinstance(incoming, dict):
@@ -736,6 +770,34 @@ class Bridge(QObject):
                 if key in incoming:
                     self.settings[key] = incoming[key]
             self._persist()
+
+    @Slot(str)
+    def logJavaScript(self, payload: str):
+        """Erro da interface, com pilha, vindo do tratador global do JavaScript.
+
+        A página também registra pelo console (ver SuperWebPage), mas ali chega
+        só a primeira linha. Aqui vem a pilha inteira, que é o que serve.
+        """
+        try:
+            dados = json.loads(payload)
+        except (ValueError, TypeError):
+            diagnostico.registrar_javascript("erro", str(payload)[:2000])
+            return
+        if not isinstance(dados, dict):
+            return
+        partes = [str(dados.get("mensagem") or "erro sem mensagem")]
+        origem = dados.get("origem")
+        if origem:
+            partes.append(f"em {origem}")
+        pilha = dados.get("pilha")
+        if pilha:
+            partes.append(chr(10) + str(pilha)[:4000])
+        diagnostico.registrar_javascript("erro", " ".join(partes))
+
+    @Slot(result=str)
+    def diagnosticoCaminho(self) -> str:
+        destino = diagnostico.caminho()
+        return str(destino) if destino else ""
 
     @Slot(str, str, str, str)
     def updateShortcuts(self, area: str, copy: str, save: str, undo: str):
@@ -869,6 +931,7 @@ class Bridge(QObject):
             self._emit_video_state(True, self.video_file.name)
             self._emit_status(f"Gravação iniciada: {self.video_file.name}.{audio_note}")
         except Exception as exc:
+            diagnostico.falha("Falha ao iniciar a gravacao de video", exc)
             self._cleanup_video()
             self._emit_status(f"Não foi possível iniciar a gravação: {exc}")
 
@@ -1093,8 +1156,8 @@ class MainWindow(QMainWindow):
             ctypes.windll.dwmapi.DwmSetWindowAttribute(
                 hwnd, 3, ctypes.byref(value), ctypes.sizeof(value)
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            diagnostico.falha("Nao foi possivel desligar as transicoes do DWM", exc)
 
     def show_resize_cover(self, duration_ms: int = 700) -> None:
         self._resize_cover.setGeometry(self.rect())
@@ -1174,8 +1237,8 @@ class MainWindow(QMainWindow):
             try:
                 ctypes.windll.user32.UnhookWindowsHookEx(self._kb_hook)
                 self._kb_hook = None
-            except Exception:
-                pass
+            except Exception as exc:
+                diagnostico.falha("Nao foi possivel soltar o gancho do PrintScreen", exc)
         if self.bridge.video_recording:
             self.bridge.stopVideoRecording()
         self.bridge.cleanup()
@@ -1193,16 +1256,21 @@ def _apply_windows_app_identity() -> None:
         return
     try:
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
-    except Exception:
-        pass
+    except Exception as exc:
+        diagnostico.falha("Nao foi possivel registrar a identidade do app no Windows", exc)
 
 
 def main() -> None:
+    # Antes de tudo: se algo quebrar daqui em diante, tem de sobrar rastro.
+    try:
+        diagnostico.configurar(BASE_DIR, read_version(BASE_DIR).get("version", "?"))
+    except Exception:
+        pass
     _apply_windows_app_identity()
     try:
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_UseSoftwareOpenGL, True)
-    except Exception:
-        pass
+    except Exception as exc:
+        diagnostico.falha("Nao foi possivel forcar o OpenGL por software", exc)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setOrganizationName("Edflávio Calavort")
@@ -1224,6 +1292,7 @@ def main() -> None:
         window.show()
         result = app.exec()
     finally:
+        diagnostico.registrar("--- Sessao encerrada")
         instance.release()
     sys.exit(result)
 
