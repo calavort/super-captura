@@ -5330,15 +5330,24 @@ function screenPixelRatio() {
     // reduzido pelo navegador: é essa redução que apaga o serrilhado das bordas
     // da caneta, do marca-texto e de todas as marcações.
     const ratio = Number(window.devicePixelRatio) || 1;
-    // E nunca menos do que a própria imagem tem. Uma captura de 2560 px exibida
-    // em 1141 px de tela virava um buffer de 2282: 11% do detalhe era jogado
-    // fora ANTES de a tela reduzir o resto. O teto de memória (MAX_RENDER_PIXELS
-    // em applyZoom) continua valendo, então imagem enorme com zoom alto não
-    // estoura - só deixa de perder detalhe à toa quando cabe.
+    const sobra = Math.max(RENDER_OVERSAMPLE, ratio);
     const nativo = sourceNativeWidth();
     const exibido = Math.max(1, docWidth * zoomLevel);
-    const paraCobrir = nativo ? nativo / exibido : 0;
-    return Math.min(4, Math.max(RENDER_OVERSAMPLE, ratio, paraCobrir));
+    // Com a imagem sendo exibida MENOR que ela é, o buffer é a resolução dela,
+    // nem mais nem menos:
+    //
+    // - Nem menos, senão detalhe é jogado fora antes de a tela reduzir o resto.
+    // - Nem mais, e era aqui que estava o borrão fino: a sobra de 2x levava uma
+    //   captura de 1600 px para um buffer de 3200 em 100% de zoom - ampliada ao
+    //   dobro e reduzida de volta pela tela, duas reamostragens para chegar ao
+    //   tamanho original. Desenhada 1:1, quem reduz é a tela, uma vez só.
+    //
+    // Acima de 100% a ampliação é o que o usuário pediu, e aí a sobra volta a
+    // valer - é ela que tira o serrilhado das marcações. E o buffer nunca fica
+    // abaixo da resolução da tela (devicePixelRatio), senão o borrão voltaria
+    // pelo outro lado.
+    if (!nativo || exibido > nativo) return Math.min(4, sobra);
+    return Math.min(4, Math.max(ratio, nativo / exibido));
 }
 
 // Largura real da imagem que está sendo exibida, em pixels dela mesma.

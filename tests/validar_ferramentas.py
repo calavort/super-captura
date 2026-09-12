@@ -85,9 +85,27 @@ def main():
         wait(lambda: js("Boolean(bgImage && bgImage.naturalWidth === 1000)"))
         QTest.qWait(300)
 
-        # --- serrilhado: o canvas e rasterizado acima da resolucao da tela ---
-        check("canvas.width / Math.max(1, canvas.clientWidth) >= 2")
-        check("canvas.height / Math.max(1, canvas.clientHeight) >= 2")
+        # --- resolucao do canvas: sobra para o traco, teto na imagem ---
+        # A sobra existe para tirar o serrilhado das marcacoes, mas ela nao pode
+        # AMPLIAR a captura: ampliar para depois reduzir borra o que a imagem tem
+        # de mais fino. Entao a regra e: nunca abaixo da resolucao da tela,
+        # 2x quando couber, e teto na resolucao da propria imagem.
+        check("""(() => {
+            const tela = Number(window.devicePixelRatio) || 1;
+            const daTela = canvas.width / Math.max(1, canvas.clientWidth);
+            if (daTela < tela - 0.01) return 'abaixo da resolucao da tela: ' + daTela;
+            const nativo = bgImage.naturalWidth || bgImage.width;
+            const exibido = docWidth * zoomLevel;
+            if (exibido > nativo) {
+                // Ampliada de proposito pelo zoom: a sobra inteira vale.
+                return daTela >= 2 - 0.01 ? true : 'sem a sobra ao ampliar: ' + daTela;
+            }
+            // Exibida menor que ela mesma: o buffer e a resolucao da imagem,
+            // nem mais (ampliar para reduzir borra) nem menos (perde detalhe).
+            const esperado = Math.min(4, Math.max(tela, nativo / exibido));
+            return Math.abs(daTela - esperado) <= 0.02
+                ? true : 'buffer em ' + daTela + 'x, esperado ' + esperado + 'x';
+        })() === true""")
         check("""(() => {
             const zigzag = Array.from({length: 21}, (_, i) => ({x: i * 5, y: 100 + (i % 2) * 6}));
             const smooth = smoothStrokePoints(zigzag, 1);
@@ -95,7 +113,7 @@ def main():
                 index ? total + Math.abs(point.y - list[index - 1].y) : 0, 0);
             return smooth.length > 2 && spread(smooth) < spread(zigzag) * 0.75;
         })()""")
-        print("OK: canvas com supersampling e traco suavizado")
+        print("OK: sobra de resolucao para o traco, com teto na resolucao da imagem")
 
         # --- opcoes de cada ferramenta acessiveis nas duas guias ---
         # A caixa "Opcoes de anotacao" saiu: cada ferramenta leva as suas no
@@ -1100,6 +1118,18 @@ def main():
             // da propria captura: era ai que 11% do detalhe se perdia antes de a
             // tela reduzir o resto.
             if (canvas.width < bgImage.naturalWidth - 2) return false;
+            // E nao pode passar dela: em 100% de zoom o buffer chegava ao dobro,
+            // ampliando a captura so para a tela reduzi-la de volta.
+            const semZoom = (() => {
+                const antes = zoomLevel;
+                zoomLevel = 1; applyZoom();
+                const largura = canvas.width;
+                zoomLevel = antes; applyZoom();
+                return largura;
+            })();
+            if (Math.abs(semZoom - bgImage.naturalWidth) > 2) {
+                return 'em 100% o buffer deu ' + semZoom + ' para uma imagem de ' + bgImage.naturalWidth;
+            }
             // E a copia preparada do fundo passa a valer para qualquer reducao.
             if (backgroundRenderSource(0.9) === bgImage) return false;
             // Sem reducao nenhuma ela nao e feita: desenhar 1:1 ja e o melhor.
@@ -1634,6 +1664,16 @@ def main():
             return depois < antes * 0.75;
         })()""")
         print("OK: alcas e tolerancias medidas em pixels de tela")
+
+        # --- as guias encostam na barra de titulo ---
+        check("""(() => {
+            // Os 4px de folga acima das guias apareciam como uma faixa cinza
+            // entre a barra verde e elas, sem separar nada.
+            const barra = document.querySelector('.top-bar').getBoundingClientRect();
+            const ativa = document.querySelector('.ribbon-tab.active').getBoundingClientRect();
+            return Math.abs(ativa.top - barra.bottom) <= 1;
+        })()""")
+        print("OK: guias encostadas na barra de titulo, sem faixa cinza no meio")
 
         # --- as tres linhas da Formatacao terminam na mesma vertical ---
         check("""(() => {
